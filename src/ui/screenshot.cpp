@@ -2,6 +2,7 @@
 #include "display.h"
 #include "../core/config.h"
 #include "../core/sd_layout.h"
+#include "../ui/keys.h"
 #include <M5Unified.h>
 #include <SD.h>
 #include <string.h>
