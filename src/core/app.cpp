@@ -11,9 +11,7 @@
 #include "../modes/blepig.h"
 #include "../modes/irport.h"
 #include "../modes/spectrum.h"
-#include "../modes/usbsd.h"
 #include "../modes/xfer.h"
-#include "../modes/badusb.h"
 #include "../modes/filemgr.h"
 #include "../modes/mp3player.h"
 #include "../modes/inspectorpig.h"
@@ -106,10 +104,8 @@ void setMode(AppMode m) {
     if (s_mode == AppMode::BLE && BlePigMode::isRunning()) BlePigMode::stop();
     if (s_mode == AppMode::IR && IrPortMode::isRunning()) IrPortMode::stop();
     if (s_mode == AppMode::SPECTRUM && SpectrumMode::isRunning()) SpectrumMode::stop();
-    if (s_mode == AppMode::USBSD && UsbSdMode::isRunning()) UsbSdMode::stop();
     if (s_mode == AppMode::FILEMGR && FileMgrMode::isRunning()) FileMgrMode::stop();
     if (s_mode == AppMode::XFER && XferMode::isRunning()) XferMode::stop();
-    if (s_mode == AppMode::BADUSB && BadUsbMode::isRunning()) BadUsbMode::stop();
     if (s_mode == AppMode::MP3 && Mp3PlayerMode::isRunning()) Mp3PlayerMode::stop();
     if (s_mode == AppMode::INSPECTOR && InspectorPig::isRunning()) InspectorPig::stop();
     if (s_mode == AppMode::TASKS && TaskManager::isRunning()) TaskManager::stop();
@@ -122,10 +118,8 @@ void setMode(AppMode m) {
     if (m == AppMode::BLE) BlePigMode::start();
     if (m == AppMode::IR) IrPortMode::start();
     if (m == AppMode::SPECTRUM) SpectrumMode::start();
-    if (m == AppMode::USBSD) UsbSdMode::start();
     if (m == AppMode::FILEMGR) FileMgrMode::start();
     if (m == AppMode::XFER) XferMode::start();
-    if (m == AppMode::BADUSB) BadUsbMode::start();
     if (m == AppMode::MP3) Mp3PlayerMode::start();
     if (m == AppMode::INSPECTOR) InspectorPig::start();
     if (m == AppMode::TASKS) TaskManager::start();
@@ -345,18 +339,12 @@ void loop() {
     } else if (s_mode == AppMode::SPECTRUM) {
         SpectrumMode::update();
         if (!SpectrumMode::isRunning()) setMode(AppMode::MENU);
-    } else if (s_mode == AppMode::USBSD) {
-        UsbSdMode::update();
-        if (!UsbSdMode::isRunning()) setMode(AppMode::MENU);
     } else if (s_mode == AppMode::FILEMGR) {
         FileMgrMode::update();
         if (!FileMgrMode::isRunning()) setMode(AppMode::MENU);
     } else if (s_mode == AppMode::XFER) {
         XferMode::update();
         if (!XferMode::isRunning()) setMode(AppMode::MENU);
-    } else if (s_mode == AppMode::BADUSB) {
-        BadUsbMode::update();
-        if (!BadUsbMode::isRunning()) setMode(AppMode::MENU);
     } else if (s_mode == AppMode::TASKS) {
         TaskManager::update();
         if (!TaskManager::isRunning()) setMode(AppMode::MENU);
