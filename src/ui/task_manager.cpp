@@ -4,7 +4,6 @@
 #include "keys.h"
 #include "../cap/sniffer.h"
 #include "../cap/hc22000.h"
-#include "../modes/badusb.h"
 #include "../modes/blepig.h"
 #include "../modes/evilpig.h"
 #include "../modes/filemgr.h"
@@ -12,7 +11,6 @@
 #include "../modes/irport.h"
 #include "../modes/pigpass.h"
 #include "../modes/spectrum.h"
-#include "../modes/usbsd.h"
 #include "../modes/xfer.h"
 #include "../modes/mp3player.h"
 #include "../storage/littlefs_ops.h"
@@ -63,10 +61,8 @@ bool rowActive(Row row) {
         case EVILPIG: return EvilPigMode::isRunning();
         case PIGPASS: return PigpassMode::isRunning();
         case SPECTRUM: return SpectrumMode::isRunning();
-        case USBSD: return UsbSdMode::isRunning();
         case FILEMGR: return FileMgrMode::isRunning();
         case XFER: return XferMode::isRunning();
-        case BADUSB: return BadUsbMode::isRunning();
         case WPA_SYNC: return WPASec::isBusy();
         case PWN_SYNC: return Pwncrack::isBusy();
         case LOOT: return LootMenu::isActive();
@@ -171,10 +167,8 @@ void stopRow(Row row) {
         case EVILPIG: if (EvilPigMode::isRunning()) EvilPigMode::stop(); break;
         case PIGPASS: if (PigpassMode::isRunning()) PigpassMode::stop(); break;
         case SPECTRUM: if (SpectrumMode::isRunning()) SpectrumMode::stop(); break;
-        case USBSD: if (UsbSdMode::isRunning()) UsbSdMode::stop(); break;
         case FILEMGR: if (FileMgrMode::isRunning()) FileMgrMode::stop(); break;
         case XFER: if (XferMode::isRunning()) XferMode::stop(); break;
-        case BADUSB: if (BadUsbMode::isRunning()) BadUsbMode::stop(); break;
         case WPA_SYNC:
         case PWN_SYNC:
             break;
@@ -188,10 +182,8 @@ void stopRow(Row row) {
             if (EvilPigMode::isRunning()) EvilPigMode::stop();
             if (PigpassMode::isRunning()) PigpassMode::stop();
             if (SpectrumMode::isRunning()) SpectrumMode::stop();
-            if (UsbSdMode::isRunning()) UsbSdMode::stop();
             if (FileMgrMode::isRunning()) FileMgrMode::stop();
             if (XferMode::isRunning()) XferMode::stop();
-            if (BadUsbMode::isRunning()) BadUsbMode::stop();
             if (Mp3PlayerMode::isRunning()) Mp3PlayerMode::stop();
             if (InspectorPig::isRunning()) InspectorPig::stop();
             if (LootMenu::isActive()) LootMenu::hide();
