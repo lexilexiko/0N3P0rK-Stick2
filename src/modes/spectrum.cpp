@@ -594,10 +594,10 @@ static void viewTick() {
         s_viewT0 = 0;
         return;
     }
-    bool left = Keys.isKeyPressed(',');
-    bool right = Keys.isKeyPressed('/');
-    left = left || Keys.isKeyPressed('<');
-    right = right || Keys.isKeyPressed('>');
+    bool left = Keys::isKeyPressed(',');
+    bool right = Keys::isKeyPressed('/');
+    left = left || Keys::isKeyPressed('<');
+    right = right || Keys::isKeyPressed('>');
     if (!left && !right) {
         s_viewT0 = 0;
         return;
@@ -1271,7 +1271,7 @@ void getStatusLine(char* out, size_t n) {
 }
 
 static void handleSweep() {
-    if (Keys.isKeyPressed(';')) {
+    if (Keys::isKeyPressed(';')) {
         int n = nextSel(-1);
         if (n >= 0) {
             setSel(n);
@@ -1279,7 +1279,7 @@ static void handleSweep() {
             SFX::play(SFX::MENU_CLICK);
         }
     }
-    if (Keys.isKeyPressed('.')) {
+    if (Keys::isKeyPressed('.')) {
         int n = nextSel(+1);
         if (n >= 0) {
             setSel(n);
@@ -1287,20 +1287,20 @@ static void handleSweep() {
             SFX::play(SFX::MENU_CLICK);
         }
     }
-    if (Keys.isKeyPressed('-')) zoomView(-1);
-    if (Keys.isKeyPressed('=')) zoomView(+1);
-    if (Keys.isKeyPressed('0')) resetView();
-    if (Keys.isKeyPressed('f') || Keys.isKeyPressed('F')) {
+    if (Keys::isKeyPressed('-')) zoomView(-1);
+    if (Keys::isKeyPressed('=')) zoomView(+1);
+    if (Keys::isKeyPressed('0')) resetView();
+    if (Keys::isKeyPressed('f') || Keys::isKeyPressed('F')) {
         s_filt = (Filt)((s_filt + 1) & 3);
         if (s_sel < 0 || s_sel >= s_nNet || !passFilt(s_net[s_sel]))
             setSel(nextSel(+1));
         SFX::play(SFX::MENU_CLICK);
     }
-    if (Keys.isKeyPressed('a') || Keys.isKeyPressed('A')) {
+    if (Keys::isKeyPressed('a') || Keys::isKeyPressed('A')) {
         enterHunt();
         return;
     }
-    if (Keys.keysState().enter) enterLock();
+    if (Keys::keysState().enter) enterLock();
 }
 
 static void handleLock() {
@@ -1310,15 +1310,15 @@ static void handleLock() {
     }
     int idx = findNet(s_monBssid);
     uint8_t nc = (idx >= 0) ? s_net[idx].nCli : 0;
-    if (Keys.isKeyPressed(';') && nc) {
+    if (Keys::isKeyPressed(';') && nc) {
         if (s_cliSel > 0) s_cliSel--;
         SFX::play(SFX::MENU_CLICK);
     }
-    if (Keys.isKeyPressed('.') && nc) {
+    if (Keys::isKeyPressed('.') && nc) {
         if (s_cliSel + 1 < nc) s_cliSel++;
         SFX::play(SFX::MENU_CLICK);
     }
-    if (Keys.isKeyPressed('w') || Keys.isKeyPressed('W')) {
+    if (Keys::isKeyPressed('w') || Keys::isKeyPressed('W')) {
         if (idx >= 0 && s_net[idx].pmf) {
             Display::showToast("PMF вЂ” DEAF");
             return;
@@ -1329,27 +1329,27 @@ static void handleLock() {
         SFX::play(SFX::REVEAL_START);
         return;
     }
-    if (Keys.keysState().enter ||
-        Keys.isKeyPressed('a') ||
-        Keys.isKeyPressed('A')) {
+    if (Keys::keysState().enter ||
+        Keys::isKeyPressed('a') ||
+        Keys::isKeyPressed('A')) {
         enterHunt();
         return;
     }
-    if (Keys.isKeyPressed('d') ||
-        Keys.isKeyPressed('D')) {
+    if (Keys::isKeyPressed('d') ||
+        Keys::isKeyPressed('D')) {
         cycleHuntDepth();
         return;
     }
-    if (Keys.isKeyPressed(' ')) kick(nc ? s_cliSel : -1);
+    if (Keys::isKeyPressed(' ')) kick(nc ? s_cliSel : -1);
 }
 
 static void handleHunt() {
-    if (Keys.isKeyPressed('d') ||
-        Keys.isKeyPressed('D')) {
+    if (Keys::isKeyPressed('d') ||
+        Keys::isKeyPressed('D')) {
         cycleHuntDepth();
         return;
     }
-    if (Keys.isKeyPressed(' ')) {
+    if (Keys::isKeyPressed(' ')) {
         // Cap::loop() already kicks s_monBssid вЂ” don't double-fire.
         Display::showToast("ALREADY KICKING");
     }

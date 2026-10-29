@@ -764,7 +764,7 @@ bool pollTransportKeys(uint8_t skipMask) {
     bool consumed = false;
     for (uint8_t i = 0; i < 5; i++) {
         char c = (char)('1' + i);
-        bool down = Keys.isKeyPressed(c);
+        bool down = Keys::isKeyPressed(c);
         uint8_t bit = (uint8_t)(1u << i);
         if (down && !(s_keyWas & bit)) {
             s_keyWas |= bit;
@@ -791,8 +791,8 @@ void Mp3PlayerMode::start() {
     s_resumePos = 0;
     s_level = 0;
     s_keyWas = 0;
-    s_rWas = Keys.isKeyPressed('r') ||
-             Keys.isKeyPressed('R');
+    s_rWas = Keys::isKeyPressed('r') ||
+             Keys::isKeyPressed('R');
     s_escWas = keyEsc();   // `` ` `` still held from the menu must not exit on entry
     s_vol = Config::personality().mp3Volume;
     if (s_vol > 100) s_vol = 100;
@@ -840,8 +840,8 @@ void Mp3PlayerMode::update() {
 
     pollTransportKeys(0);
 
-    bool r = Keys.isKeyPressed('r') ||
-             Keys.isKeyPressed('R');
+    bool r = Keys::isKeyPressed('r') ||
+             Keys::isKeyPressed('R');
     if (r && !s_rWas) {
         rescan();
         Display::showToast(s_n ? "RESCAN" : (s_msg[0] ? s_msg : "NO MP3"), 900);

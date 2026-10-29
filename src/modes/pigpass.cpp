@@ -2007,12 +2007,12 @@ void PigpassMode::drawUI(M5Canvas& canvas) {
 }
 
 void PigpassMode::handleMaskInput() {
-    auto keys = Keys.keysState();
+    auto keys = Keys::keysState();
     bool back = keyEsc();
-    bool up = Keys.isKeyPressed(';');
-    bool down = Keys.isKeyPressed('.');
-    bool lenDown = Keys.isKeyPressed(',');
-    bool lenUp = Keys.isKeyPressed('/');
+    bool up = Keys::isKeyPressed(';');
+    bool down = Keys::isKeyPressed('.');
+    bool lenDown = Keys::isKeyPressed(',');
+    bool lenUp = Keys::isKeyPressed('/');
 
     if (back) {
         transitionState(PigpassState::SELECT_WORDLIST);
@@ -2046,7 +2046,7 @@ void PigpassMode::handleMaskInput() {
 }
 
 void PigpassMode::handleInput() {
-    bool anyPressed = Keys.isPressed();
+    bool anyPressed = Keys::isPressed();
     if (!anyPressed) {
         keyWasPressed = false;
         return;
@@ -2054,10 +2054,10 @@ void PigpassMode::handleInput() {
     if (keyWasPressed) return;
     keyWasPressed = true;
 
-    auto keys = Keys.keysState();
+    auto keys = Keys::keysState();
     bool back = keyEsc();
-    bool up = Keys.isKeyPressed(';');
-    bool down = Keys.isKeyPressed('.');
+    bool up = Keys::isKeyPressed(';');
+    bool down = Keys::isKeyPressed('.');
 
     if (state == PigpassState::SELECT_MASK) {
         handleMaskInput();
@@ -2077,8 +2077,8 @@ void PigpassMode::handleInput() {
 
         // Handshake tabs: , / like LOOT (WPASEC / PWNCRACK)
         if (state == PigpassState::SELECT_HANDSHAKE &&
-            (Keys.isKeyPressed(',') ||
-             Keys.isKeyPressed('/'))) {
+            (Keys::isKeyPressed(',') ||
+             Keys::isKeyPressed('/'))) {
             hsTab = (hsTab == PigpassHsTab::PCAP)
                         ? PigpassHsTab::HC22000
                         : PigpassHsTab::PCAP;
