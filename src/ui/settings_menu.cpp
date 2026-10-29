@@ -12,7 +12,6 @@
 #include "../piglet/mood.h"
 #include "../storage/littlefs_ops.h"
 #include "../audio/sfx.h"
-#include "../board/led.h"
 #include "../net/ap_sta.h"
 #include "../cap/sniffer.h"
 #include "../cap/methods/method_ctx.h"
@@ -988,17 +987,7 @@ static bool setValue(const Item& it, int v) {
                 p.dimLevel = (uint8_t)v;
                 Display::resetDimTimer();
                 break;
-            case 4:
-                p.ledEnabled = (v != 0);
-                if (!p.ledEnabled) Led::off();
-                else Led::applyBrightness();
-                break;
-            case 5:
-                p.ledBright = (uint8_t)v;
-                Led::applyBrightness();
-                // brief white so user sees level
-                if (p.ledEnabled) Led::pulse(255, 255, 255, 200);
-                break;
+
             default: return false;
         }
         Config::save();

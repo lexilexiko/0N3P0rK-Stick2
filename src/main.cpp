@@ -20,7 +20,6 @@
 #include "cap/sniffer.h"
 #include "modes/evilpig.h"
 #include "modes/pigpass.h"
-#include "board/led.h"
 #include "ui/keys.h"
 
 static void preInitWiFiDriverEarly() {
@@ -81,7 +80,6 @@ void setup() {
     Net::begin();
     Storage::loadKeysIntoNet();
     Cap::begin();
-    Led::begin();
     EvilPigMode::init();
     PigpassMode::init();
 
@@ -101,7 +99,6 @@ void loop() {
     XP::tick();
     Cap::loop();
     Mp3PlayerMode::tick();   // keeps SD music running with the window hidden / screen off
-    Led::update();
 
     if (millis() - s_lastHeapLog > 30000) {
         s_lastHeapLog = millis();
