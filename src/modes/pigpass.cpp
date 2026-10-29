@@ -434,7 +434,7 @@ static void processDot11Frame(const uint8_t* frame, uint16_t frameLen) {
 static bool finalizeHandshake() {
     if (handshake.isPmkid) {
         if (handshake.ssid[0] == '\0') {
-            Serial.println("[PIGPASS] ERROR: PMKID missing SSID");
+            Serial2.println("[PIGPASS] ERROR: PMKID missing SSID");
             return false;
         }
         handshake.valid = true;
@@ -447,17 +447,17 @@ static bool finalizeHandshake() {
         if (handshake.anonce[i]) { hasAnonce = true; break; }
     }
     if (!handshake.has_m2 || handshake.eapol_len < EAPOL_MIN_KEY_LEN) {
-        Serial.println("[PIGPASS] ERROR: No usable EAPOL M2 in capture");
+        Serial2.println("[PIGPASS] ERROR: No usable EAPOL M2 in capture");
         return false;
     }
     if (!hasAnonce) {
-        Serial.println("[PIGPASS] ERROR: Missing ANonce (need M1 or M3)");
+        Serial2.println("[PIGPASS] ERROR: Missing ANonce (need M1 or M3)");
         return false;
     }
     if (handshake.ssid[0] == '\0') {
-        Serial.println("[PIGPASS] WARN: SSID empty вЂ” will still try MIC (SSID required for PMK)");
+        Serial2.println("[PIGPASS] WARN: SSID empty вЂ” will still try MIC (SSID required for PMK)");
         // SSID is required for PBKDF2; fail hard
-        Serial.println("[PIGPASS] ERROR: SSID required for cracking");
+        Serial2.println("[PIGPASS] ERROR: SSID required for cracking");
         return false;
     }
     if (handshake.key_version == 0) {
@@ -465,7 +465,7 @@ static bool finalizeHandshake() {
     }
 
     handshake.valid = true;
-    Serial.printf("[PIGPASS] Loaded HS SSID='%s' ver=%u M1=%d M2=%d M3=%d eapol=%u\n",
+    Serial2.printf("[PIGPASS] Loaded HS SSID='%s' ver=%u M1=%d M2=%d M3=%d eapol=%u\n",
                   handshake.ssid, handshake.key_version,
                   handshake.has_m1 ? 1 : 0, handshake.has_m2 ? 1 : 0,
                   handshake.has_m3 ? 1 : 0, handshake.eapol_len);
@@ -575,7 +575,7 @@ static bool parse22000Line(const char* line) {
 static bool parse22000File(const char* path) {
     File f = LittleFS.open(path, FILE_READ);
     if (!f) {
-        Serial.printf("[PIGPASS] ERROR: Cannot open 22000: %s\n", path);
+        Serial2.printf("[PIGPASS] ERROR: Cannot open 22000: %s\n", path);
         return false;
     }
 
@@ -637,14 +637,14 @@ static bool skipBytes(File& f, uint32_t n) {
 static bool parsePcapFile(const char* path) {
     File f = LittleFS.open(path, FILE_READ);
     if (!f) {
-        Serial.printf("[PIGPASS] ERROR: Cannot open PCAP: %s\n", path);
+        Serial2.printf("[PIGPASS] ERROR: Cannot open PCAP: %s\n", path);
         return false;
     }
 
     uint8_t ghdr[24];
     if (f.read(ghdr, 24) != 24) {
         f.close();
-        Serial.println("[PIGPASS] ERROR: Bad PCAP header");
+        Serial2.println("[PIGPASS] ERROR: Bad PCAP header");
         return false;
     }
 
@@ -665,7 +665,7 @@ static bool parsePcapFile(const char* path) {
         nano = true;
     } else {
         f.close();
-        Serial.printf("[PIGPASS] ERROR: Unknown PCAP magic %08lx\n", (unsigned long)magic);
+        Serial2.printf("[PIGPASS] ERROR: Unknown PCAP magic %08lx\n", (unsigned long)magic);
         return false;
     }
     (void)nano;
@@ -686,7 +686,7 @@ static bool parsePcapFile(const char* path) {
 
     uint32_t linktype = u32(ghdr + 20);
     // 105 = IEEE802_11, 127 = IEEE802_11_RADIOTAP, 1 = Ethernet (rare for our captures)
-    Serial.printf("[PIGPASS] PCAP linktype=%lu\n", (unsigned long)linktype);
+    Serial2.printf("[PIGPASS] PCAP linktype=%lu\n", (unsigned long)linktype);
 
     uint8_t pktBuf[1600];
     int pktCount = 0;
@@ -732,7 +732,7 @@ static bool parsePcapFile(const char* path) {
     }
 
     f.close();
-    Serial.printf("[PIGPASS] PCAP packets scanned: %d\n", pktCount);
+    Serial2.printf("[PIGPASS] PCAP packets scanned: %d\n", pktCount);
     return finalizeHandshake();
 }
 
@@ -742,11 +742,11 @@ static bool parsePcapHandshake(const char* path) {
     if (!path || path[0] == '\0') return false;
 
     if (endsWithIgnoreCase(path, ".22000")) {
-        Serial.printf("[PIGPASS] Parsing hashcat 22000: %s\n", path);
+        Serial2.printf("[PIGPASS] Parsing hashcat 22000: %s\n", path);
         return parse22000File(path);
     }
 
-    Serial.printf("[PIGPASS] Parsing PCAP: %s\n", path);
+    Serial2.printf("[PIGPASS] Parsing PCAP: %s\n", path);
     return parsePcapFile(path);
 }
 
@@ -815,7 +815,7 @@ static void startCrackSession(bool keepAttempts) {
         s_savedCpuMhz = getCpuFrequencyMhz();
         if (s_savedCpuMhz < 240) setCpuFrequencyMhz(240);
     }
-    Serial.printf("[PIGPASS] crack session cpu=%u free=%u keepAtt=%d\n",
+    Serial2.printf("[PIGPASS] crack session cpu=%u free=%u keepAtt=%d\n",
                   (unsigned)getCpuFrequencyMhz(),
                   (unsigned)ESP.getFreeHeap(),
                   (int)keepAttempts);
@@ -835,7 +835,7 @@ static bool tryNextPassword(const char* password) {
         memcpy(s_foundLocal, password, n);
         s_foundLocal[n] = '\0';
         s_foundFlag = true;
-        Serial.printf("[PIGPASS] MATCH: %s\n", s_foundLocal);
+        Serial2.printf("[PIGPASS] MATCH: %s\n", s_foundLocal);
     }
     s_attempts++;
     return s_foundFlag;
@@ -976,7 +976,7 @@ void PigpassMode::scanHandshakeFiles() {
     files.reserve(16);
 
     if (!Config::isSDAvailable()) {
-        Serial.println("[PIGPASS] No SD card for handshake scan");
+        Serial2.println("[PIGPASS] No SD card for handshake scan");
         return;
     }
 
@@ -995,7 +995,7 @@ void PigpassMode::scanHandshakeFiles() {
 
     selectedIndex = 0;
     scrollOffset = 0;
-    Serial.printf("[PIGPASS] Handshake tab=%s files=%u in %s\n",
+    Serial2.printf("[PIGPASS] Handshake tab=%s files=%u in %s\n",
                   hsTab == PigpassHsTab::HC22000 ? "22000" : "PCAP",
                   (unsigned)files.size(), hsDir);
 }
@@ -1114,7 +1114,7 @@ void PigpassMode::scanWordlistFiles() {
     }
 
     if (!Config::isSDAvailable()) {
-        Serial.println("[PIGPASS] No SD card for wordlist scan");
+        Serial2.println("[PIGPASS] No SD card for wordlist scan");
         selectedIndex = 0;
         scrollOffset = 0;
         return;
@@ -1144,19 +1144,19 @@ void PigpassMode::scanWordlistFiles() {
                 if (selectedIndex >= VISIBLE_ITEMS) {
                     scrollOffset = selectedIndex - VISIBLE_ITEMS + 1;
                 }
-                Serial.printf("[PIGPASS] prefer last WL idx=%u %s\n",
+                Serial2.printf("[PIGPASS] prefer last WL idx=%u %s\n",
                               (unsigned)selectedIndex, last);
                 break;
             }
         }
     }
 
-    Serial.printf("[PIGPASS] Wordlist files found: %u in %s\n",
+    Serial2.printf("[PIGPASS] Wordlist files found: %u in %s\n",
                   (unsigned)files.size(), wlDir);
 }
 
 void PigpassMode::init() {
-    Serial.println("[PIGPASS] Initialized");
+    Serial2.println("[PIGPASS] Initialized");
     state = PigpassState::IDLE;
     clearFileList();
     handshakePath[0] = '\0';
@@ -1169,11 +1169,11 @@ void PigpassMode::init() {
 }
 
 void PigpassMode::start() {
-    Serial.println("[PIGPASS] Starting PigPass mode");
+    Serial2.println("[PIGPASS] Starting PigPass mode");
     // Keep last hsTab if user re-enters; only ensure valid.
     if ((uint8_t)hsTab > (uint8_t)PigpassHsTab::HC22000) hsTab = PigpassHsTab::PCAP;
     if (!allocateRuntimeBuffers()) {
-        Serial.println("[PIGPASS] ERROR: runtime buffers unavailable");
+        Serial2.println("[PIGPASS] ERROR: runtime buffers unavailable");
         Display::showToast("PIGPASS LOW HEAP");
         return;
     }
@@ -1211,7 +1211,7 @@ void PigpassMode::start() {
 }
 
 void PigpassMode::stop() {
-    Serial.println("[PIGPASS] Stopping PigPass mode");
+    Serial2.println("[PIGPASS] Stopping PigPass mode");
 
     // Persist progress so reboot / re-open can resume same HS+WL
     if (state == PigpassState::RUNNING || state == PigpassState::PAUSED) {
@@ -1232,7 +1232,7 @@ void PigpassMode::stop() {
 
     attempts = s_attempts;
     uint32_t att_lo = (uint32_t)(attempts & 0xFFFFFFFF);
-    Serial.printf("[PIGPASS] Final stats - Attempts: %lu, Time: %us rate=%.1f/s\n",
+    Serial2.printf("[PIGPASS] Final stats - Attempts: %lu, Time: %us rate=%.1f/s\n",
                   att_lo, elapsedSeconds, rate);
     SDLog::log("PIGPASS", "Stopped - attempts=%lu rate=%.1f", att_lo, rate);
 
@@ -1245,7 +1245,7 @@ void PigpassMode::stop() {
 void PigpassMode::transitionState(PigpassState newState) {
     if (state == newState) return;
 
-    Serial.printf("[PIGPASS] State transition: %d -> %d\n", (int)state, (int)newState);
+    Serial2.printf("[PIGPASS] State transition: %d -> %d\n", (int)state, (int)newState);
     state = newState;
     uiDirty = true;
     keyWasPressed = true;  // debounce across screens
@@ -1272,10 +1272,10 @@ void PigpassMode::markFound(const char* password, bool cached) {
         XP::addXP(XPEvent::PIGPASS_CRACK);  // +100 + lifetime counter
         saveCrackedResult(password);
         SDLog::log("PIGPASS", "PASSWORD FOUND: %s", password);
-        Serial.printf("[PIGPASS] PASSWORD FOUND: %s\n", password);
+        Serial2.printf("[PIGPASS] PASSWORD FOUND: %s\n", password);
     } else {
         SDLog::log("PIGPASS", "PASSWORD FROM CACHE: %s", password);
-        Serial.printf("[PIGPASS] PASSWORD FROM CACHE: %s\n", password);
+        Serial2.printf("[PIGPASS] PASSWORD FROM CACHE: %s\n", password);
     }
 }
 
@@ -1381,7 +1381,7 @@ void PigpassMode::saveCheckpoint() {
 
     File f = LittleFS.open(path, FILE_WRITE);
     if (!f) {
-        Serial.println("[PIGPASS] checkpoint write fail");
+        Serial2.println("[PIGPASS] checkpoint write fail");
         return;
     }
 
@@ -1398,7 +1398,7 @@ void PigpassMode::saveCheckpoint() {
     f.println((unsigned long)elapsedSeconds);
     f.close();
     s_lastCheckpointMs = millis();
-    Serial.printf("[PIGPASS] checkpoint off=%lu att=%lu mask=%d\n",
+    Serial2.printf("[PIGPASS] checkpoint off=%lu att=%lu mask=%d\n",
                   (unsigned long)off, (unsigned long)(uint32_t)att, (int)maskMode);
 }
 
@@ -1449,7 +1449,7 @@ void PigpassMode::clearCheckpoint() {
     const char* path = SDLayout::pigpassCheckpointPath();
     if (path && LittleFS.exists(path)) {
         LittleFS.remove(path);
-        Serial.println("[PIGPASS] checkpoint cleared");
+        Serial2.println("[PIGPASS] checkpoint cleared");
     }
     s_resumePending = false;
     s_resumeOffset = 0;
@@ -1511,7 +1511,7 @@ void PigpassMode::saveCrackedResult(const char* password) {
     if (!f) {
         f = LittleFS.open(path, FILE_WRITE);
         if (!f) {
-            Serial.printf("[PIGPASS] ERROR: cannot write cache %s\n", path);
+            Serial2.printf("[PIGPASS] ERROR: cannot write cache %s\n", path);
             return;
         }
     }
@@ -1519,7 +1519,7 @@ void PigpassMode::saveCrackedResult(const char* password) {
     // BSSID:SSID:password
     f.printf("%s:%s:%s\n", bssid, handshake.ssid, password);
     f.close();
-    Serial.printf("[PIGPASS] Saved result to %s\n", path);
+    Serial2.printf("[PIGPASS] Saved result to %s\n", path);
 }
 
 void PigpassMode::beginWordlistRun(const char* path) {
@@ -1663,7 +1663,7 @@ void PigpassMode::selectCurrentFile() {
     if (state == PigpassState::SELECT_HANDSHAKE) {
         strncpy(handshakePath, entry.path, sizeof(handshakePath) - 1);
         handshakePath[sizeof(handshakePath) - 1] = '\0';
-        Serial.printf("[PIGPASS] Selected handshake: %s\n", handshakePath);
+        Serial2.printf("[PIGPASS] Selected handshake: %s\n", handshakePath);
 
         if (!parsePcapHandshake(handshakePath)) {
             Display::showToast("BAD HANDSHAKE FILE");
@@ -2179,7 +2179,7 @@ void PigpassMode::runBrute() {
             if (!wordlistFile) {
                 wordlistFile = LittleFS.open(wordlistPath, FILE_READ);
                 if (!wordlistFile) {
-                    Serial.printf("[PIGPASS] ERROR: Cannot open wordlist: %s\n", wordlistPath);
+                    Serial2.printf("[PIGPASS] ERROR: Cannot open wordlist: %s\n", wordlistPath);
                     Display::showToast("WORDLIST OPEN FAIL");
                     transitionState(PigpassState::DONE);
                     return;
@@ -2187,7 +2187,7 @@ void PigpassMode::runBrute() {
                 resetWordlistBuffer();
                 if (s_resumePending && s_resumeOffset > 0) {
                     if (!wordlistFile.seek(s_resumeOffset)) {
-                        Serial.printf("[PIGPASS] seek fail off=%lu вЂ” start over\n",
+                        Serial2.printf("[PIGPASS] seek fail off=%lu вЂ” start over\n",
                                       (unsigned long)s_resumeOffset);
                         wordlistFile.seek(0);
                         s_resumeAttempts = 0;
@@ -2197,7 +2197,7 @@ void PigpassMode::runBrute() {
                         elapsedSeconds = 0;
                         startTime = millis();
                     } else {
-                        Serial.printf("[PIGPASS] seeked to off=%lu att=%lu\n",
+                        Serial2.printf("[PIGPASS] seeked to off=%lu att=%lu\n",
                                       (unsigned long)s_resumeOffset,
                                       (unsigned long)(uint32_t)s_resumeAttempts);
                     }
@@ -2235,7 +2235,7 @@ void PigpassMode::runBrute() {
             freePbkdfCtx();
             resetWordlistBuffer();
             clearCheckpoint();  // finished list вЂ” done
-            Serial.printf("[PIGPASS] Wordlist done attempts=%lu rate=%.1f\n",
+            Serial2.printf("[PIGPASS] Wordlist done attempts=%lu rate=%.1f\n",
                           (unsigned long)(uint32_t)attempts, rate);
             transitionState(PigpassState::DONE);
             return;

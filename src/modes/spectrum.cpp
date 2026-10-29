@@ -1185,7 +1185,7 @@ void start() {
     if (s_run) return;
     if (!allocateRuntimeBuffers()) {
         Display::showToast("SPECTRUM LOW HEAP");
-        Serial.println("[SPEC] runtime buffers unavailable");
+        Serial2.println("[SPEC] runtime buffers unavailable");
         return;
     }
     if (Cap::isRunning()) Cap::stop();
@@ -1217,7 +1217,7 @@ void start() {
     s_ppsT0 = millis();
     s_huntDepth = Config::radio().hsDepth;
     if (s_huntDepth > 2) s_huntDepth = 2;
-    Serial.println("[SPEC] sweep 2.4");
+    Serial2.println("[SPEC] sweep 2.4");
 }
 
 void stop() {
@@ -1236,7 +1236,7 @@ void stop() {
     s_phase = SWEEP;
     s_busy = false;
     freeRuntimeBuffers();
-    Serial.println("[SPEC] stop");
+    Serial2.println("[SPEC] stop");
 }
 
 bool isRunning() { return s_run; }
