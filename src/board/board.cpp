@@ -1,5 +1,6 @@
 ﻿// board/board.cpp
 #include "board.h"
+#include <Arduino.h>
 #include <M5Unified.h>
 #include <M5Unified.h>
 #include <esp_system.h>

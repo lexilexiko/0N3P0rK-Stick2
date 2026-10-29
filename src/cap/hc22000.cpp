@@ -1,7 +1,7 @@
 // cap/hc22000.cpp
 #include "hc22000.h"
 #include "capture_name.h"
-
+#include <Arduino.h>
 #include "../storage/littlefs_ops.h"
 #include "../core/config.h"
 #include <LittleFS.h>
