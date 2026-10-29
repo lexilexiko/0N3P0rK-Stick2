@@ -1,0 +1,1811 @@
+﻿#include "settings_menu.h"
+#include "display.h"
+#include "keys.h"
+#include "../core/config.h"
+#include "../core/xp.h"
+#include "../piglet/props.h"
+#include "../piglet/cards_table.h"
+#include "../core/app.h"
+#include "../piglet/scene_layers.h"
+#include "../piglet/trees.h"
+#include "../piglet/wolf.h"
+#include "../piglet/mood.h"
+#include "../storage/littlefs_ops.h"
+#include "../audio/sfx.h"
+#include "../board/led.h"
+#include "../net/ap_sta.h"
+#include "../cap/sniffer.h"
+#include "../cap/methods/method_ctx.h"
+#include "../cap/packs/pack_ctx.h"
+#include "../board/board.h"
+
+#ifndef KEY_ENTER
+#define KEY_ENTER 13
+#endif
+#ifndef KEY_BACKSPACE
+#define KEY_BACKSPACE 8
+#endif
+
+#include "../build_info.h"
+#include <M5Unified.h>
+#include <WiFi.h>
+#include <string.h>
+#include <stdio.h>
+
+namespace SettingsMenu {
+
+enum class Kind : uint8_t { TOGGLE, VALUE, TEXT, BIND, ACTION };
+enum class ConnPhase : uint8_t { LIST = 0, PASS = 1 };
+
+struct Item {
+    const char* label;
+    Kind kind;
+    uint8_t id;
+    int minV;
+    int maxV;
+    int step;
+};
+
+static const Item SCENE[] = {
+    {"NAME",      Kind::TEXT,   0,  0, 0, 0},
+    {"SKIN",      Kind::VALUE,  1,  0, PIG_SKIN_COUNT - 1, 1},
+    {"TUSKS",     Kind::TOGGLE, 24, 0, 1, 1},
+    {"SEASON",    Kind::VALUE,  2,  0, SEASON_MODE_COUNT - 1, 1},
+    {"SKY",       Kind::VALUE,  3,  0, SKY_MODE_COUNT - 1, 1},
+    {"FIELD",     Kind::VALUE, 25, 240, 1230, 50},
+    {"SCROLL",    Kind::VALUE,  4,  1, 10, 1},
+    {"TREES",     Kind::ACTION,71, 0, 0, 0},
+    {"EFFECTS",   Kind::ACTION,72, 0, 0, 0},
+    {"OTHER",     Kind::ACTION,73, 0, 0, 0},
+};
+static const uint8_t SCENE_N = sizeof(SCENE) / sizeof(SCENE[0]);
+
+static const Item SCENE_TREES[] = {
+    {"FLORA",     Kind::ACTION,70, 0, 0, 0},
+    {"TREES",     Kind::TOGGLE, 8,  0, 1, 1},
+};
+static const uint8_t SCENE_TREES_N = sizeof(SCENE_TREES) / sizeof(SCENE_TREES[0]);
+
+static const Item SCENE_EFFECTS[] = {
+    {"WEATHER",   Kind::TOGGLE, 9,  0, 1, 1},
+    {"GRASS BACK",Kind::TOGGLE,10, 0, 1, 1},
+    {"GRASS FRONT",Kind::TOGGLE,21,0, 1, 1},
+    {"SEASON FX", Kind::TOGGLE,12, 0, 1, 1},
+    {"MOOD",      Kind::TOGGLE,13, 0, 1, 1},
+    {"ANIM TEST", Kind::TOGGLE,14, 0, 1, 1},
+};
+static const uint8_t SCENE_EFFECTS_N = sizeof(SCENE_EFFECTS) / sizeof(SCENE_EFFECTS[0]);
+
+static const Item SCENE_OTHER[] = {
+    {"LIFE",      Kind::TOGGLE, 5,  0, 1, 1},
+    {"ALL LAYERS",Kind::TOGGLE, 6,  0, 1, 1},
+    {"WOLF",      Kind::TOGGLE, 7,  0, 1, 1},
+    {"PROPS",     Kind::TOGGLE, 18, 0, 1, 1},
+    {"FRIEND",    Kind::TOGGLE, 19, 0, 1, 1},
+    {"CARDS",     Kind::TOGGLE, 20, 0, 1, 1},
+    {"WOLF EAT",  Kind::TOGGLE, 15, 0, 1, 1},
+    {"SHOW PIG",  Kind::TOGGLE, 11, 0, 1, 1},
+    {"TALK SEC",  Kind::VALUE,  17, 2, 10, 1},
+    {"CPU HUD",   Kind::TOGGLE, 22, 0, 1, 1},
+    {"UNDERGROUND",Kind::TOGGLE,23, 0, 1, 1},
+    {"CODE",      Kind::TEXT,   16, 0, 0, 0},
+};
+static const uint8_t SCENE_OTHER_N = sizeof(SCENE_OTHER) / sizeof(SCENE_OTHER[0]);
+
+static const Item FLORA[] = {
+    {"FRUIT TREES", Kind::VALUE, 30, 1, 3, 1},
+    {"DECOR TREES", Kind::VALUE, 31, 1, 3, 1},
+    {"BUSHES",      Kind::VALUE, 32, 1, 3, 1},
+};
+static const uint8_t FLORA_N = sizeof(FLORA) / sizeof(FLORA[0]);
+
+static const Item SYSTEM[] = {
+    {"BRIGHT",    Kind::VALUE, 0, 10, 100, 10},
+    {"SOUND",     Kind::VALUE, 1, 0, 5, 1},
+    {"DIM AFTER", Kind::VALUE, 2, 0, 300, 10},
+    {"DIM LEVEL", Kind::VALUE, 3, 0, 50, 5},
+    {"LED",       Kind::TOGGLE, 4, 0, 1, 1},
+    {"LED BRIGHT",Kind::VALUE, 5, 0, 100, 5},
+};
+static const uint8_t SYSTEM_N = sizeof(SYSTEM) / sizeof(SYSTEM[0]);
+
+// RADIO top-level: three navigation items.
+// All tuning knobs live in RADIO_EDIT (opened via EDIT action).
+// PACK and HS METHOD stay here for quick one-click switching.
+static const Item RADIO[] = {
+    {"PACK",    Kind::VALUE,  18, 0, 0, 1},   // max resolved at runtime
+    {"METHOD",  Kind::VALUE,  7,  0, 0, 1},   // max resolved at runtime
+    {"EDIT",    Kind::ACTION, 60, 0, 0, 0},   // open RADIO_EDIT for current method
+    // Sniffer-direct settings that affect CAPTURE not the method:
+    {"HOP MS",  Kind::VALUE,  0,  50, 2000, 50},
+    {"MIN DWELL",Kind::VALUE, 23, 0, 600, 50},
+    {"LOCK MS", Kind::VALUE,  1,  0, 15000, 500},
+    {"LOCK HS", Kind::TOGGLE, 2,  0, 1, 1},
+    {"HS DEPTH",Kind::VALUE,  24, 0, 2, 1},
+    {"RND MAC", Kind::TOGGLE, 4,  0, 1, 1},
+    {"HOP SET", Kind::VALUE,  6,  0, HOP_SET_COUNT - 1, 1},
+    {"ATK RSSI",Kind::VALUE,  5,  -90, -50, 5},
+    {"HS FILE B",Kind::VALUE, 28, 1024, 8192, 1024},
+    {"RING",    Kind::VALUE,  29, 4, 32, 1},
+    {"PENDING", Kind::VALUE, 32, 4, 16, 2},
+    {"AUTO SKIP", Kind::TOGGLE, 33, 0, 1, 1},
+    {"FAT PCAP",Kind::TOGGLE, 17, 0, 1, 1},
+    {"TX PWR",  Kind::VALUE,  30, 1, 20, 1},
+    {"BURST",     Kind::VALUE,  31, 0, 3, 1},   
+    {"HS TIMEOUT",Kind::VALUE, 34, 0, 120, 30},
+    {"RESET",   Kind::ACTION, 19, 0, 0, 0},   // reset to stock
+};
+
+static const uint8_t RADIO_N = sizeof(RADIO) / sizeof(RADIO[0]);
+
+// в”Ђв”Ђ RADIO EDIT в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+// All items that exist. buildEditItems() picks the subset for the current
+// method and copies them into s_editItems. Max 20 items (fits the biggest
+// method knob list with headroom).
+
+static const Item ALL_RADIO_KNOBS[] = {
+    // Method-scoped attack behaviour вЂ” each entry maps to a Ctx field the
+    // methods actually read. Sniffer-level knobs (HOP/LOCK/DEAUTH/RSSI/HS
+    // FILE/RING/FALLBACK/PAUSE/DWELL) live in the top RADIO page instead.
+    {"KICK N",    Kind::VALUE,  9,  1, 6, 1},
+    {"BIDIR",     Kind::TOGGLE, 10, 0, 1, 1},
+    {"EAPOL TX",  Kind::TOGGLE, 11, 0, 1, 1},
+    {"PMKID",     Kind::TOGGLE, 12, 0, 1, 1},
+    {"CSA",       Kind::TOGGLE, 13, 0, 1, 1},
+    {"AUTH FLOOD",Kind::TOGGLE, 14, 0, 1, 1},
+    {"REASON",    Kind::VALUE,  15, 1, 8, 1},
+    // FOCUS / scoring (only FOCUS reads these)
+    {"JITTER MS", Kind::VALUE,  20, 0, 20, 1},
+    {"COOLDOWN",  Kind::VALUE,  21, 0, 30, 1},
+    {"SCORE THR", Kind::VALUE,  22, -100, 200, 10},
+    {"DATA ACT",  Kind::TOGGLE, 25, 0, 1, 1},
+    {"STRICT LK", Kind::TOGGLE, 26, 0, 1, 1},
+};
+static const uint8_t ALL_KNOBS_N = sizeof(ALL_RADIO_KNOBS) / sizeof(ALL_RADIO_KNOBS[0]);
+
+static Item s_editItems[20];
+static uint8_t s_editN = 0;
+
+// Name of the method whose knobs EDIT should show. AUTO hsMethod (0) starts
+// on the first registry entry, so its knobs are those of that method.
+static const char* currentMethodName() {
+    RadioConfig& r = Config::radio();
+    if (r.hsMethod > 0) {
+        const char* n = Cap::Methods::name((uint8_t)(r.hsMethod - 1));
+        if (n) return n;
+    } else {
+        const char* n = Cap::Methods::name(0);
+        if (n) return n;
+    }
+    return "ALL";
+}
+
+// Build edit list for the currently selected method. Each method declares
+// its own knob list right next to its registration (Entry::knobIds in
+// method_ctx.h) вЂ” so adding a new method only touches the method file.
+static void buildEditItems() {
+    s_editN = 0;
+    const char* mname = currentMethodName();
+    const Cap::Methods::Entry* me = Cap::Methods::findByName(mname);
+    if (!me || !me->knobIds) return;   // unknown / no scoped knobs в†’ nothing
+    const uint8_t* ids = me->knobIds;
+    // Copy only the matching knobs in the declared order
+    for (uint8_t i = 0; ids[i] != 0 && s_editN < 20; i++) {
+        for (uint8_t k = 0; k < ALL_KNOBS_N; k++) {
+            if (ALL_RADIO_KNOBS[k].id == ids[i]) {
+                s_editItems[s_editN++] = ALL_RADIO_KNOBS[k];
+                break;
+            }
+        }
+    }
+}
+
+static const Item BLE[] = {
+    {"BLE BURST", Kind::VALUE, 0, 50, 500, 50},
+    {"ADV TIME",  Kind::VALUE, 1, 50, 200, 25},
+};
+static const uint8_t BLE_N = sizeof(BLE) / sizeof(BLE[0]);
+
+static const Item KEYS[] = {
+    {"AGGRO",    Kind::BIND, 0, 0, 0, 0},
+    {"LIGHT",    Kind::BIND, 1, 0, 0, 0},
+    {"PIGPASS",  Kind::BIND, 2, 0, 0, 0},
+    {"EVILPIG",  Kind::BIND, 3, 0, 0, 0},
+    {"BLE",      Kind::BIND, 4, 0, 0, 0},
+    {"IR PORT",  Kind::BIND, 5, 0, 0, 0},
+    {"SPECTRUM", Kind::BIND, 6, 0, 0, 0},
+    {"LOOT",     Kind::BIND, 7, 0, 0, 0},
+    {"RADIO",    Kind::BIND, 8, 0, 0, 0},
+    {"FILES",    Kind::BIND, 9, 0, 0, 0},
+    {"PIG",      Kind::BIND, 10, 0, 0, 0},
+    {"XFER",     Kind::BIND, 11, 0, 0, 0},
+    {"BADUSB",   Kind::BIND, 12, 0, 0, 0},
+    {"USB SD",   Kind::BIND, 13, 0, 0, 0},
+    {"WIFI",     Kind::BIND, 14, 0, 0, 0},
+    {"STOP",     Kind::BIND, 15, 0, 0, 0},
+    {"TASKS",    Kind::BIND, 16, 0, 0, 0},
+    {"SNAP",     Kind::BIND, 17, 0, 0, 0},
+};
+static const uint8_t KEYS_N = sizeof(KEYS) / sizeof(KEYS[0]);
+
+static const char* const H_SCENE[] = {
+    "TYPE NAME. ENT SAVE.",
+    "SKIN OF THE HOG.",
+    "SHOW BOAR TUSKS.",
+    "AUTO OR LOCK A SEASON.",
+    "AUTO DUSK / DAY / NIGHT.",
+    "CYCLIC WORLD WIDTH IN PIXELS.",
+    "WALK SPEED AT THE EDGES.",
+    "TREES, BUSHES AND FLORA COUNTS.",
+    "WEATHER AND SEASONAL EFFECTS.",
+    "OTHER SCENE SETTINGS.",
+};
+
+static const char* const H_SCENE_TREES[] = {
+    "SET 1-3 TREES AND BUSHES.",
+    "SHOW TREE AND BUSH SCENERY.",
+};
+
+static const char* const H_SCENE_EFFECTS[] = {
+    "SHOW RAIN / SNOW / CLOUDS.",
+    "SHOW BACKGROUND GRASS.",
+    "SHOW FOREGROUND GRASS.",
+    "SEASONAL SCENE EFFECTS.",
+    "SHOW PIG MOOD EFFECTS.",
+    "QUICK TEST FOR FARM ANIMS.",
+};
+
+static const char* const H_SCENE_OTHER[] = {
+    "SHE LIVES WHILE YOU WORK.",
+    "QUICK TOGGLE: ALL FARM VISUALS.",
+    "RANDOM WOLF VISITOR.",
+    "SEASONAL PROPS ON FARM.",
+    "COMPANION PIG ON FARM.",
+    "DUEL CARD TABLE ON FARM.",
+    "KILL EATS RANDOM HANDSHAKES.",
+    "DRAW THE PIG BODY.",
+    "SEC BETWEEN MONOLOGUES.",
+    "FRAME LOAD VS 33MS BUDGET.",
+    "ROOTS, BURROWS AND CRAWLERS.",
+    "TYPE CODE. ENT."
+};
+
+static const char* const H_FLORA[] = {
+    "SET 1-3 FRUIT TREES.",
+    "SET 1-3 DECOR TREES.",
+    "SET 1-3 BUSHES."
+};
+
+static const char* const H_SYSTEM[] = {
+    "SCREEN GLOW.",
+    "0 = MUTE.",
+    "0 = NEVER DIM.",
+    "0 = SCREEN OFF WHEN DIM.",
+    "CARDPUTER RGB ON/OFF.",
+    "RGB LED BRIGHTNESS."
+};
+static const char* const H_RADIO[] = {
+    "RADIO PRESET.",
+    "CAPTURE METHOD.",
+    "EDIT CURRENT METHOD OPTIONS.",
+    "TIME PER CHANNEL.",
+    "MIN TIME PER CHANNEL; OFF DISABLES IT.",
+    "LOCK DURATION AFTER EAPOL.",
+    "HOLD CHANNEL WHEN HANDSHAKE ARRIVES.",
+    "PAIR / +M3 / FULL 4-WAY.",
+    "RANDOMIZE RADIO MAC.",
+    "CHANNEL HOPPING ORDER.",
+    "MINIMUM SIGNAL FOR TARGET SELECTION.",
+    "MAXIMUM HANDSHAKE PCAP SIZE.",
+    "RING SLOTS: MORE SLOTS USE MORE RAM.",
+    "INCLUDE RADIO METADATA IN PCAP.",
+    "TRANSMIT POWER SETTING.",
+    "ATTACK BURST PATTERN.",
+    "SECONDS AFTER PAIR BEFORE SKIPPING AP.",
+    "RESTORE DEFAULT RADIO SETTINGS.",
+    "INCOMPLETE HS IDLE TIME; 0=NEVER.",
+};
+// Hints for RADIO_EDIT вЂ” parallel to ALL_RADIO_KNOBS (same order).
+static const char* const H_KNOBS[] = {
+    "DEAUTH ROUNDS PER AP.",
+    "KICK BOTH WAYS AP<->STA.",
+    "EAPOL-START / LOGOFF TX.",
+    "AUTH+ASSOC FOR PMKID.",
+    "SPOOF CSA BEACON TO HERD.",
+    "RANDOM AUTH IF NO CLIENTS.",
+    "802.11 DEAUTH REASON CODE.",
+    "ANTI-WIDS GAP BETWEEN MGMT.",
+    "SEC COOLDOWN AFTER KICK/AP.",
+    "MIN SCORE TO ATTACK (FOCUS).",
+    "DATA FRAMES FEED FOCUS SCORE.",
+    "LOCK: ONLY KICK LOCKED BSSID.",
+    "BURST: 0=TIGHT 1=RND 2=CLUSTER 3=PULSE.",
+};
+static const char* const H_BLE[] = {
+    "MS BETWEEN BLE BURSTS.",
+    "MS EACH ADVERTISEMENT."
+};
+static const char* const H_KEYS[] = {
+    "AGGRESSIVE RADIO CAPTURE.",
+    "LIGHT RADIO SNIFFER.",
+    "LOCAL PASSWORD AUDIT.",
+    "EVILPIG LAB MODE.",
+    "BLE LAB MODE.",
+    "IR TRANSMITTER.",
+    "SPECTRUM SCANNER.",
+    "CAPTURE FILES AND SYNC.",
+    "RADIO SETTINGS.",
+    "SD / LITTLEFS FILE MANAGER.",
+    "PIG SETTINGS.",
+    "LOCAL XFER SERVER.",
+    "BADUSB / BADBLE TOOLS.",
+    "USB SD CARD MODE.",
+    "HOME WIFI SETTINGS.",
+    "STOP ACTIVE TASKS.",
+    "OPEN TASK MANAGER.",
+    "SCREENSHOT."
+};
+
+struct NetRow {
+    char ssid[33];
+    int8_t rssi;
+    bool open;
+};
+
+static bool s_active = false;
+static bool s_keyWas = false;
+static uint32_t s_openMs = 0;
+static bool s_editing = false;
+static bool s_text = false;
+static bool s_bind = false;
+static bool s_resetConfirm = false;
+static SettingsPage s_page = SettingsPage::SCENE;
+static SettingsPage s_sceneParentPage = SettingsPage::SCENE;
+static uint8_t s_sceneParentIdx = 0;
+static uint8_t s_idx = 0;
+static uint8_t s_scroll = 0;
+static uint8_t s_statScroll = 0;
+static const uint8_t STAT_VIS = 5;
+static char s_edit[65];
+static const uint8_t VIS = 4;
+
+static ConnPhase s_conn = ConnPhase::LIST;
+static NetRow s_nets[16];
+static uint8_t s_netN = 0;
+static uint8_t s_netIdx = 0;
+static uint8_t s_netScroll = 0;
+static char s_pickSsid[33] = "";
+static bool s_pickOpen = false;
+static bool s_scanning = false;
+
+static bool isSceneSettingsPage() {
+    return s_page == SettingsPage::SCENE ||
+           s_page == SettingsPage::SCENE_TREES ||
+           s_page == SettingsPage::SCENE_EFFECTS ||
+           s_page == SettingsPage::SCENE_OTHER;
+}
+
+static const Item* items(uint8_t* n) {
+    if (s_page == SettingsPage::SYSTEM) { *n = SYSTEM_N; return SYSTEM; }
+    if (s_page == SettingsPage::FLORA) { *n = FLORA_N; return FLORA; }
+    if (s_page == SettingsPage::SCENE_TREES) { *n = SCENE_TREES_N; return SCENE_TREES; }
+    if (s_page == SettingsPage::SCENE_EFFECTS) { *n = SCENE_EFFECTS_N; return SCENE_EFFECTS; }
+    if (s_page == SettingsPage::SCENE_OTHER) { *n = SCENE_OTHER_N; return SCENE_OTHER; }
+    if (s_page == SettingsPage::RADIO) { *n = RADIO_N; return RADIO; }
+    if (s_page == SettingsPage::RADIO_EDIT) { *n = s_editN; return s_editItems; }
+    if (s_page == SettingsPage::BLE) { *n = BLE_N; return BLE; }
+    if (s_page == SettingsPage::KEYS) { *n = KEYS_N; return KEYS; }
+    if (s_page == SettingsPage::CONNECT) { *n = 0; return nullptr; }
+    if (s_page == SettingsPage::STATUS) { *n = 0; return nullptr; }
+    *n = SCENE_N;
+    return SCENE;
+}
+
+static bool allLayersOn() {
+    const PersonalityConfig& p = Config::personality();
+    return SceneLayers::pig && SceneLayers::grassBack && SceneLayers::grassFront &&
+           SceneLayers::trees && p.fruitTreesAmbient &&
+           SceneLayers::underground && p.propsEnabled && p.friendEnabled &&
+           p.cardsEnabled && p.wolfEnabled &&
+           SceneLayers::sky && SceneLayers::weather && SceneLayers::seasonFx &&
+           SceneLayers::mood && SceneLayers::wolf;
+}
+
+static const char* skinName(uint8_t s) {
+    switch ((PigSkin)s) {
+        case PigSkin::CLASSIC: return "CLASSIC";
+        case PigSkin::BLUSH:   return "BLUSH";
+        case PigSkin::HOG:     return "HOG";
+        case PigSkin::ZOMBIE:  return "ZOMBIE";
+        case PigSkin::RETRO:   return "RETRO";
+        case PigSkin::SHADOW:  return "SHADOW";
+        case PigSkin::CANDY:   return "CANDY";
+        case PigSkin::GOLD:    return "GOLD";
+        case PigSkin::DIRTY:   return "DIRTY";
+        case PigSkin::BOAR:    return "BOAR";
+        default: return "?";
+    }
+}
+static const char* seasonName(uint8_t s) {
+    switch ((SeasonMode)s) {
+        case SeasonMode::AUTO:   return "AUTO";
+        case SeasonMode::SPRING: return "SPRING";
+        case SeasonMode::SUMMER: return "SUMMER";
+        case SeasonMode::AUTUMN: return "AUTUMN";
+        case SeasonMode::WINTER: return "WINTER";
+        case SeasonMode::RETRO:  return "RETRO";
+        case SeasonMode::NOIR:   return "NOIR";
+        case SeasonMode::CITY:   return "CITY";
+        case SeasonMode::DESERT: return "DESERT";
+        default: return "?";
+    }
+}
+static const char* skyName(uint8_t s) {
+    switch ((SkyMode)s) {
+        case SkyMode::AUTO:  return "AUTO";
+        case SkyMode::DAY:   return "DAY";
+        case SkyMode::NIGHT: return "NIGHT";
+        default: return "?";
+    }
+}
+static const char* hopSetName(uint8_t s) {
+    switch ((HopSet)s) {
+        case HopSet::ALL:      return "ALL 1-13";
+        case HopSet::PRIORITY: return "PRI 1-6-11";
+        case HopSet::CORE:     return "CORE 1-6-11";
+        default: return "?";
+    }
+}
+// HS DEPTH (RADIO id 24): how much of the 4-way handshake to insist on
+// before the lock-on-BSSID logic gives up on a target and moves on. See
+// RadioConfig::hsDepth (config.h) and Hc22000::hasHandshake().
+static const char* hsDepthName(uint8_t s) {
+    switch (s) {
+        case 0:  return "PAIR M1+2";
+        case 1:  return "+M3";
+        case 2:  return "FULL M1-4";
+        default: return "?";
+    }
+}
+// BURST (RADIO id 31): how kickBurst rounds are spaced (see
+// WSLBypasser::setBurstPattern). 0=STRAIGHT (tight) 1=RANDOM (anti-WIDS
+// jitter, default) 2=CLUSTER (burst then long rest) 3=PULSE (rhythm).
+static const char* burstName(uint8_t s) {
+    switch (s) {
+        case 0:  return "STRAIGHT";
+        case 1:  return "RANDOM";
+        case 2:  return "CLUSTER";
+        case 3:  return "PULSE";
+        default: return "?";
+    }
+}
+// HsMethod layout for the saved value (kept stable across versions so old
+// NVS blobs still parse): 0 = AUTO (special), then explicit methods use
+// 1..N and resolve to Methods::name(idx-1). Unknown values fall back to
+// AUTO so the user can still tweak something without bricking the radio.
+static const char* hsMethodName(uint8_t s) {
+    if (s == 0) return "AUTO";
+    const char* n = Cap::Methods::name((uint8_t)(s - 1));
+    return n ? n : "AUTO";
+}
+// PACK layout mirrors hsMethodName() just above but walks the independent
+// Cap::Packs table: 0 = STOCK, 1..N = Packs::name(idx-1), RADIO_PACK_CUSTOM
+// (0xFF) = CUSTOM.
+static const char* radioPackName(uint8_t s) {
+    if (s == (uint8_t)RadioPack::STOCK) return "STOCK";
+    if (s == RADIO_PACK_CUSTOM) return "CUSTOM";
+    const char* n = Cap::Packs::name((uint8_t)(s - 1));
+    return n ? n : "STOCK";
+}
+
+// RADIO and RADIO_EDIT share the same knob IDs (they read/write the same
+// RadioConfig fields), so getValue/setValue/formatValue must treat them the
+// same вЂ” otherwise the EDIT page falls through to the BLE fields below.
+static bool isRadioPage() {
+    return s_page == SettingsPage::RADIO || s_page == SettingsPage::RADIO_EDIT;
+}
+
+static int getValue(const Item& it) {
+    PersonalityConfig& p = Config::personality();
+    RadioConfig& r = Config::radio();
+    BleConfig& b = Config::ble();
+    if (s_page == SettingsPage::FLORA) {
+        switch (it.id) {
+            case 30: return p.fruitTreeCount;
+            case 31: return p.decorTreeCount;
+            case 32: return p.bushCount;
+            default: return 1;
+        }
+    }
+    if (isSceneSettingsPage()) {
+        switch (it.id) {
+            case 1: return p.pigSkin;
+            case 25: return p.fieldWidth;
+            case 24: return p.tusksEnabled ? 1 : 0;
+            case 2: return p.seasonMode;
+            case 3: return p.skyMode;
+            case 4: return p.scrollSpeed;
+            case 17: return p.talkIntervalSec;
+            case 5: return p.freeLife ? 1 : 0;
+            case 6: return allLayersOn() ? 1 : 0;
+            case 7: return (p.wolfEnabled && SceneLayers::wolf) ? 1 : 0;
+            case 15: return p.wolfEatLoot ? 1 : 0;
+            case 8: return (p.fruitTreesAmbient && SceneLayers::trees) ? 1 : 0;
+            case 9: return SceneLayers::weather ? 1 : 0;
+            case 10: return SceneLayers::grassBack ? 1 : 0;
+            case 21: return SceneLayers::grassFront ? 1 : 0;
+            case 11: return SceneLayers::pig ? 1 : 0;
+            case 12: return SceneLayers::seasonFx ? 1 : 0;
+            case 13: return SceneLayers::mood ? 1 : 0;
+            case 14: return p.animTest ? 1 : 0;
+            case 22: return SceneLayers::cpuHud ? 1 : 0;
+            case 23: return SceneLayers::underground ? 1 : 0;
+            case 18: return p.propsEnabled ? 1 : 0;
+            case 19: return p.friendEnabled ? 1 : 0;
+            case 20: return p.cardsEnabled ? 1 : 0;
+            default: return 0;
+        }
+    }
+    if (s_page == SettingsPage::SYSTEM) {
+        switch (it.id) {
+            case 0: return p.brightness;
+            case 1: return p.soundLevel;
+            case 2: return p.dimTimeout;
+            case 3: return p.dimLevel;
+            case 4: return p.ledEnabled ? 1 : 0;
+            case 5: return p.ledBright;
+            default: return 0;
+        }
+    }
+    if (isRadioPage()) {
+        switch (it.id) {
+            case 0: return r.hopMs;
+            case 1: return r.lockMs;
+            case 2: return r.lockOnHs ? 1 : 0;
+            case 3: return r.deauth ? 1 : 0;
+            case 4: return r.randomMac ? 1 : 0;
+            case 5: return r.minRssi;
+            case 6: return r.hopSet;
+            case 7: return r.hsMethod;
+            case 8: return r.fallbackSec;
+            case 9: return r.kickBurst;
+            case 10: return r.bidirKick ? 1 : 0;
+            case 11: return r.eapolTx ? 1 : 0;
+            case 12: return r.pmkidProbe ? 1 : 0;
+            case 13: return r.csaHerd ? 1 : 0;
+            case 14: return r.authFlood ? 1 : 0;
+            case 15: return r.deauthReason;
+            case 16: return r.pauseMs;
+            case 17: return r.fatPcap ? 1 : 0;
+            case 28: return r.hsFileBytes;
+            case 29: return r.ringSlots;
+            case 32: return r.pendingSlots;
+            case 33: return r.autoSkipCompleted ? 1 : 0;
+            case 34: return r.pendingTimeoutSec;
+            case 18: return r.pack;
+            // Porkchop-style knobs (IDs 20..23).
+            case 20: return r.jitterMs;
+            case 21: return r.cooldownMs;
+            case 22: return r.scoreThr;
+            case 23: return r.dwellMinMs;
+            case 24: return r.hsDepth;
+            case 25: return r.dataAct ? 1 : 0;
+            case 26: return r.strictLock ? 1 : 0;
+            case 27: return r.depthHoldSec;
+            case 30: return r.txPowerDb;
+            case 31: return r.burstPattern;
+            default: return 0;
+        }
+    }
+    return it.id == 0 ? b.burstMs : b.advMs;
+}
+
+static void formatValue(const Item& it, char* out, size_t len, bool editing) {
+    if (it.kind == Kind::TEXT) {
+        if (it.id == 16) {
+            if (s_text) snprintf(out, len, ">%s", s_edit);
+            else snprintf(out, len, XP::allUnlocked() ? "OPEN" : "----");
+            return;
+        }
+        const char* n = s_text ? s_edit : Config::personality().name;
+        snprintf(out, len, editing || s_text ? ">%s" : "%s", n);
+        return;
+    }
+    if (it.kind == Kind::BIND) {
+        if (s_bind && editing) {
+            snprintf(out, len, ">?");
+            return;
+        }
+        char k = Config::hotkeys().key[it.id];
+        if (!k) {
+            snprintf(out, len, "-");
+            return;
+        }
+        if (k >= 'a' && k <= 'z') k = (char)(k - 'a' + 'A');
+        snprintf(out, len, "%c", k);
+        return;
+    }
+    if (it.kind == Kind::ACTION) {
+        snprintf(out, len, editing ? "[ENT]" : "ENT");
+        return;
+    }
+    if (it.kind == Kind::TOGGLE) {
+        snprintf(out, len, getValue(it) ? "YES" : "NO");
+        return;
+    }
+    char raw[20];
+    raw[0] = '\0';
+    if (isSceneSettingsPage()) {
+        if (it.id == 1) strncpy(raw, skinName((uint8_t)getValue(it)), sizeof(raw) - 1);
+        else if (it.id == 2) strncpy(raw, seasonName((uint8_t)getValue(it)), sizeof(raw) - 1);
+        else if (it.id == 3) strncpy(raw, skyName((uint8_t)getValue(it)), sizeof(raw) - 1);
+        else if (it.id == 25) snprintf(raw, sizeof(raw), "%dPX", getValue(it));
+        else snprintf(raw, sizeof(raw), "%d", getValue(it));
+    } else if (s_page == SettingsPage::SYSTEM && it.id == 2) {
+        int v = getValue(it);
+        if (v <= 0) strncpy(raw, "OFF", sizeof(raw) - 1);
+        else snprintf(raw, sizeof(raw), "%dS", v);
+    } else if (isRadioPage() && it.id == 6) {
+        strncpy(raw, hopSetName((uint8_t)getValue(it)), sizeof(raw) - 1);
+    } else if (isRadioPage() && it.id == 7) {
+        strncpy(raw, hsMethodName((uint8_t)getValue(it)), sizeof(raw) - 1);
+    } else if (isRadioPage() && it.id == 18) {
+        strncpy(raw, radioPackName((uint8_t)getValue(it)), sizeof(raw) - 1);
+    } else if (isRadioPage() && it.id == 23) {
+        int v = getValue(it);
+        if (v <= 0) strncpy(raw, "OFF", sizeof(raw) - 1);
+        else snprintf(raw, sizeof(raw), "%dMS", v);
+    } else if (isRadioPage() && it.id == 24) {
+        strncpy(raw, hsDepthName((uint8_t)getValue(it)), sizeof(raw) - 1);
+    } else if (isRadioPage() && it.id == 28) {
+        snprintf(raw, sizeof(raw), "%dB", getValue(it));
+    } else if (isRadioPage() && it.id == 8) {
+        snprintf(raw, sizeof(raw), "%dS", getValue(it));
+    } else if (isRadioPage() && it.id == 27) {
+        int v = getValue(it);
+        if (v <= 0) strncpy(raw, "OFF", sizeof(raw) - 1);
+        else snprintf(raw, sizeof(raw), "%dS", v);
+    } else if (isRadioPage() && it.id == 34) {
+        int v = getValue(it);
+        if (v <= 0) strncpy(raw, "OFF", sizeof(raw) - 1);
+        else snprintf(raw, sizeof(raw), "%dS", v);
+    } else if (isRadioPage() && it.id == 21) {
+        int v = getValue(it);
+        if (v <= 0) strncpy(raw, "OFF", sizeof(raw) - 1);
+        else snprintf(raw, sizeof(raw), "%dS", v);
+    } else if (isRadioPage() && it.id == 5) {
+        int v = getValue(it);
+        if (v == RADIO_RSSI_NO_LIMIT) strncpy(raw, "ANY", sizeof(raw) - 1);
+        else snprintf(raw, sizeof(raw), "%ddBm", v);
+    } else if (isRadioPage() && it.id == 30) {
+        snprintf(raw, sizeof(raw), "%ddBm", getValue(it));
+    } else if (isRadioPage() && it.id == 31) {
+        strncpy(raw, burstName((uint8_t)getValue(it)), sizeof(raw) - 1);
+    } else {
+        snprintf(raw, sizeof(raw), "%d", getValue(it));
+    }
+    raw[sizeof(raw) - 1] = '\0';
+    if (editing) snprintf(out, len, "[%s]", raw);
+    else strncpy(out, raw, len - 1);
+    out[len - 1] = '\0';
+}
+
+static bool setValue(const Item& it, int v) {
+    PersonalityConfig& p = Config::personality();
+    RadioConfig& r = Config::radio();
+    BleConfig& b = Config::ble();
+    // HS METHOD (RADIO id 7) is the only item whose max grows with the
+    // method registry вЂ” clamp it explicitly so the rest of the function
+    // can keep using a single minV/maxV range.
+    if (isRadioPage() && it.id == 7) {
+        int maxV = (int)Cap::Methods::count(); // AUTO takes slot 0
+        if (v < 0) v = maxV;
+        if (v > maxV) v = 0;
+        r.hsMethod = (uint8_t)v;
+        Config::save();
+        return true;
+    }
+
+    if (isSceneSettingsPage() && it.id == 25) {
+        static const uint16_t widths[] = {
+            240, 290, 340, 390, 440, 490, 540, 590, 640, 690, 740,
+            790, 840, 890, 940, 990, 1040, 1090, 1140, 1190, 1230
+        };
+        constexpr uint8_t WIDTH_COUNT = sizeof(widths) / sizeof(widths[0]);
+        uint8_t slot = 0;
+        while (slot + 1 < WIDTH_COUNT && widths[slot] != p.fieldWidth) slot++;
+        if (widths[slot] != p.fieldWidth) slot = 7;
+        const bool stepUp = v > (int)p.fieldWidth;
+        slot = (uint8_t)((slot + (stepUp ? 1 : WIDTH_COUNT - 1)) % WIDTH_COUNT);
+        p.fieldWidth = widths[slot];
+        Config::save();
+        Trees::applyFloraCounts();
+        return true;
+    }
+
+    // PACK (RADIO id 18): 0 = STOCK, 1..N = Cap::Packs::name(idx-1) (its
+    // own independent registry, see cap/packs/), RADIO_PACK_CUSTOM (0xFF)
+    // = CUSTOM. CUSTOM is a fixed sentinel rather than "N+1" on disk (see
+    // config.h), so it can't be reached by the usual +/-1 wrap the way
+    // HS METHOD's slots are - instead we map the current value to a
+    // contiguous logical slot (0..N+1, CUSTOM last), step that, then map
+    // back. `v` is `getValue()+/-step` in the RAW on-disk domain, so its
+    // direction relative to the current raw value tells us which way the
+    // user pressed even when the raw jump (e.g. off of 0xFF) isn't +/-1.
+    if (isRadioPage() && it.id == 18) {
+        int packCount = (int)Cap::Packs::count();
+        int lastSlot = packCount + 1; // logical slot for CUSTOM
+        int curSlot = (r.pack == RADIO_PACK_CUSTOM) ? lastSlot : (int)r.pack;
+        bool wantUp = v > (int)r.pack;
+        int nextSlot = curSlot + (wantUp ? 1 : -1);
+        if (nextSlot < 0) nextSlot = lastSlot;
+        if (nextSlot > lastSlot) nextSlot = 0;
+        uint8_t resolved = (nextSlot == lastSlot) ? RADIO_PACK_CUSTOM : (uint8_t)nextSlot;
+        Config::applyRadioPack(resolved);
+        Display::showToast(radioPackName(resolved), 900);
+        return true;
+    }
+
+    // HS FILE B has four intentional sizes rather than a linear range.
+    if (isRadioPage() && it.id == 28) {
+        static const uint16_t sizes[] = {1024, 2048, 4096, 8192};
+        int current = (int)r.hsFileBytes;
+        uint8_t slot = 1;
+        for (uint8_t i = 0; i < 4; i++) {
+            if (sizes[i] == current) {
+                slot = i;
+                break;
+            }
+        }
+        slot = (v > current) ? (uint8_t)((slot + 1) % 4)
+                             : (uint8_t)((slot + 3) % 4);
+        r.hsFileBytes = sizes[slot];
+        Config::markRadioCustom();
+        Config::save();
+        return true;
+    }
+
+    if (isRadioPage() && it.id == 29) {
+        // MEMFIX: the sniffer clamp was extended to the full 4..32 range in
+        // cap/sniffer.cpp (EAPOL_FRAME_MAX slots make 32 affordable), so the
+        // RING widget must offer the same range instead of the old {4,8,12,16,24,28}
+        // list that silently reset every other value to 12.
+        static const uint8_t slots[] = {4, 8, 12, 16, 24, 28, 32};
+        enum { RING_SLOTS_N = 7 }; // == slots count
+        int current = (int)r.ringSlots;
+        uint8_t slot = 2;
+        for (uint8_t i = 0; i < RING_SLOTS_N; i++) {
+            if (slots[i] == current) {
+                slot = i;
+                break;
+            }
+        }
+        slot = (v > current) ? (uint8_t)((slot + 1) % RING_SLOTS_N)
+                             : (uint8_t)((slot + RING_SLOTS_N - 1) % RING_SLOTS_N);
+        r.ringSlots = slots[slot];
+        Config::markRadioCustom();
+        Config::save();
+        Display::showToast("RING SAVED", 700);
+        return true;
+    }
+
+    if (isRadioPage() && it.id == 32) {
+        static const uint8_t slots[] = {4, 6, 8, 10, 12, 14, 16};
+        uint8_t current = r.pendingSlots;
+        uint8_t slot = 0;
+        for (uint8_t i = 0; i < 7; i++) {
+            if (slots[i] == current) {
+                slot = i;
+                break;
+            }
+        }
+        slot = (v > current) ? (uint8_t)((slot + 1) % 7)
+                             : (uint8_t)((slot + 6) % 7);
+        r.pendingSlots = slots[slot];
+        Config::markRadioCustom();
+        Config::save();
+        Display::showToast("PENDING SAVED", 700);
+        return true;
+    }
+
+    if (isRadioPage() && it.id == 5) {
+        static const int8_t levels[] = {
+            -90, -85, -80, -75, -70, -65, -60, -55, -50,
+            RADIO_RSSI_NO_LIMIT
+        };
+        const int levelCount = sizeof(levels) / sizeof(levels[0]);
+        int currentSlot = levelCount - 1;
+        for (int i = 0; i < levelCount; i++) {
+            if (levels[i] == r.minRssi) {
+                currentSlot = i;
+                break;
+            }
+        }
+        const bool stepUp = v > (int)r.minRssi;
+        currentSlot = (currentSlot + (stepUp ? 1 : levelCount - 1)) % levelCount;
+        r.minRssi = levels[currentSlot];
+        Config::markRadioCustom();
+        Config::save();
+        return true;
+    }
+
+    if (v < it.minV) v = it.maxV;
+    if (v > it.maxV) v = it.minV;
+
+    if (s_page == SettingsPage::FLORA) {
+        switch (it.id) {
+            case 30: p.fruitTreeCount = (uint8_t)v; break;
+            case 31: p.decorTreeCount = (uint8_t)v; break;
+            case 32: p.bushCount = (uint8_t)v; break;
+            default: return false;
+        }
+        Config::save();
+        Trees::applyFloraCounts();
+        return true;
+    }
+
+    if (isSceneSettingsPage()) {
+        switch (it.id) {
+            case 1: {
+                if (Mood::getHearts() < 1) {
+                    Display::showToast("NEED HEART", 1000);
+                    return false;
+                }
+                const int from = (int)p.pigSkin;
+                const int span = it.maxV - it.minV + 1;
+                const int fwd = (v - from + span) % span;
+                const int back = (from - v + span) % span;
+                const int dir = (fwd <= back) ? 1 : -1;
+                int skin = v;
+                if (XP::isSkinLocked((uint8_t)skin)) {
+                    skin = from;
+                    for (int i = 0; i < PIG_SKIN_COUNT; i++) {
+                        skin += dir;
+                        if (skin < it.minV) skin = it.maxV;
+                        if (skin > it.maxV) skin = it.minV;
+                        if (XP::isSkinLocked((uint8_t)skin)) continue;
+                        break;
+                    }
+                }
+                if (skin == (int)PigSkin::ZOMBIE) {
+                    Config::becomeZombie();
+                    break;
+                }
+                const bool leavingZombie = (from == (int)PigSkin::ZOMBIE);
+                p.pigSkin = (uint8_t)skin;
+                if (leavingZombie) p.nightWolfBites = 0;
+                break;
+            }
+            case 2: {
+                int from = (int)p.seasonMode;
+                int span = it.maxV - it.minV + 1;
+                int fwd = (v - from + span) % span;
+                int back = (from - v + span) % span;
+                int dir = (fwd <= back) ? 1 : -1;
+                int sm = v;
+                if (XP::isSeasonLocked((uint8_t)sm)) {
+                    sm = from;
+                    for (int i = 0; i < SEASON_MODE_COUNT; i++) {
+                        sm += dir;
+                        if (sm < it.minV) sm = it.maxV;
+                        if (sm > it.maxV) sm = it.minV;
+                        if (XP::isSeasonLocked((uint8_t)sm)) continue;
+                        break;
+                    }
+                }
+                p.seasonMode = (uint8_t)sm;
+                break;
+            }
+            case 3: p.skyMode = (uint8_t)v; break;
+            case 4: p.scrollSpeed = (uint8_t)v; break;
+            case 17: p.talkIntervalSec = (uint8_t)v; break;
+            case 5: p.freeLife = v != 0; break;
+            case 6:
+                SceneLayers::setAll(v != 0);
+                p.fruitTreesAmbient = v != 0;
+                p.propsEnabled = v != 0;
+                p.friendEnabled = v != 0;
+                p.cardsEnabled = v != 0;
+                p.wolfEnabled = v != 0;
+                if (v == 0) {
+                    p.animTest = false;
+                    Wolf::reset();
+                    Props::forceDemo(6);
+                    if (CardsTable::isActive()) CardsTable::end();
+                }
+                break;
+            case 7:
+                p.wolfEnabled = v != 0;
+                SceneLayers::wolf = v != 0;
+                if (v == 0) Wolf::reset();
+                break;
+            case 24:
+                p.tusksEnabled = v != 0;
+                break;
+            case 18:
+                p.propsEnabled = v != 0;
+                if (v == 0) {
+                    Props::forceDemo(6);  // clear active prop
+                    Display::showToast("PROPS OFF", 900);
+                } else {
+                    Display::showToast("PROPS ON", 900);
+                }
+                break;
+            case 19:
+                p.friendEnabled = v != 0;
+                Display::showToast(v ? "FRIEND ON" : "FRIEND OFF", 900);
+                break;
+            case 20:
+                p.cardsEnabled = v != 0;
+                Display::showToast(v ? "CARDS ON" : "CARDS OFF", 900);
+                break;
+            case 15:
+                p.wolfEatLoot = v != 0;
+                if (v == 0) {
+                    uint8_t n = Storage::restoreWolfLoot();
+                    if (n) {
+                        char msg[28];
+                        snprintf(msg, sizeof(msg), "WOLF GAVE %u FILE%s",
+                                 (unsigned)n, n == 1 ? "" : "S");
+                        Display::showToast(msg, 2200);
+                    }
+                }
+                break;
+            case 8:
+                p.fruitTreesAmbient = v != 0;
+                SceneLayers::trees = v != 0;
+                break;
+            case 9: SceneLayers::weather = v != 0; break;
+            case 10: SceneLayers::grassBack = v != 0; break;
+            case 21: SceneLayers::grassFront = v != 0; break;
+            case 11: SceneLayers::pig = v != 0; break;
+            case 12: SceneLayers::seasonFx = v != 0; break;
+            case 13: SceneLayers::mood = v != 0; break;
+            case 14:
+                p.animTest = v != 0;
+                if (v != 0) Display::showToast("ANIM TEST: -/= ON FARM", 1800);
+                break;
+            case 22: SceneLayers::cpuHud = v != 0; break;
+            case 23: SceneLayers::underground = v != 0; break;
+            default: return false;
+        }
+        Config::save();
+        return true;
+    }
+    if (s_page == SettingsPage::SYSTEM) {
+        switch (it.id) {
+            case 0:
+                p.brightness = (uint8_t)v;
+                Display::resetDimTimer();
+                Display::refreshBrightness();
+                break;
+            case 1: p.soundLevel = (uint8_t)v; break;
+            case 2:
+                p.dimTimeout = (uint16_t)v;
+                Display::resetDimTimer();
+                break;
+            case 3:
+                p.dimLevel = (uint8_t)v;
+                Display::resetDimTimer();
+                break;
+            case 4:
+                p.ledEnabled = (v != 0);
+                if (!p.ledEnabled) Led::off();
+                else Led::applyBrightness();
+                break;
+            case 5:
+                p.ledBright = (uint8_t)v;
+                Led::applyBrightness();
+                // brief white so user sees level
+                if (p.ledEnabled) Led::pulse(255, 255, 255, 200);
+                break;
+            default: return false;
+        }
+        Config::save();
+        return true;
+    }
+    if (isRadioPage()) {
+        // PACK (id 18) is handled above, before the generic minV/maxV clamp.
+        switch (it.id) {
+            case 0: r.hopMs = (uint16_t)v; break;
+            case 1: r.lockMs = (uint16_t)v; break;
+            case 2: r.lockOnHs = v != 0; break;
+            case 3: r.deauth = v != 0; break;
+            case 4: r.randomMac = v != 0; break;
+            case 5: r.minRssi = (int8_t)v; break;
+            case 6: r.hopSet = (uint8_t)v; break;
+            case 7: r.hsMethod = (uint8_t)v; break;
+            case 8: r.fallbackSec = (uint8_t)v; break;
+            case 9: r.kickBurst = (uint8_t)v; break;
+            case 10: r.bidirKick = v != 0; break;
+            case 11: r.eapolTx = v != 0; break;
+            case 12: r.pmkidProbe = v != 0; break;
+            case 13: r.csaHerd = v != 0; break;
+            case 14: r.authFlood = v != 0; break;
+            case 15: r.deauthReason = (uint8_t)v; break;
+            case 16: r.pauseMs = (uint16_t)v; break;
+            case 17: r.fatPcap = v != 0; break;
+            case 28: r.hsFileBytes = (uint16_t)v; break;
+            case 29: r.ringSlots = (uint8_t)v; break;
+            // MEMFIX: id 32 (PENDING) had a getter but no setter here, so the
+            // PENDING knob in the RADIO menu changed the drawn value and then
+            // silently threw it away on save. Without this the user could not
+            // raise the concurrent-handshake capacity at all.
+            case 32: r.pendingSlots = (uint8_t)v; break;
+            case 33: r.autoSkipCompleted = v != 0; break;
+            // Porkchop-style knobs (IDs 20..23) + handshake depth (24).
+            case 20: r.jitterMs = (uint8_t)v; break;
+            case 21: r.cooldownMs = (uint8_t)v; break;
+            case 22: r.scoreThr = (int16_t)v; break;
+            case 23:
+                r.dwellMinMs = (uint16_t)((v > 0 && v < 50) ? 0 : v);
+                break;
+            case 24: r.hsDepth = (uint8_t)v; break;
+            case 25: r.dataAct = (uint8_t)(v != 0 ? 1 : 0); break;
+            case 26: r.strictLock = v != 0; break;
+            case 27: r.depthHoldSec = (uint8_t)v; break;
+            case 30: r.txPowerDb = (int8_t)v; break;
+            case 31: r.burstPattern = (uint8_t)v; break;
+            case 34: r.pendingTimeoutSec = (uint8_t)v; break;
+            default: return false;
+        }
+        // Any hand-tuned knob flips PACK to CUSTOM so the UI reflects that
+        // the active parameters no longer match a preset. HS METHOD (id=7)
+        // is excluded above вЂ” switching methods alone isn't "customising".
+        Config::markRadioCustom();
+        Config::save();
+        return true;
+    }
+    if (it.id == 0) b.burstMs = (uint16_t)v;
+    else b.advMs = (uint16_t)v;
+    Config::save();
+    return true;
+}
+
+static void keepVisible(uint8_t n) {
+    if (s_idx < s_scroll) s_scroll = s_idx;
+    if (s_idx >= s_scroll + VIS) s_scroll = (uint8_t)(s_idx - VIS + 1);
+    if (s_scroll + VIS > n && n >= VIS) s_scroll = (uint8_t)(n - VIS);
+}
+
+static void scanWifi() {
+    s_scanning = true;
+    s_netN = 0;
+    s_netIdx = 0;
+    s_netScroll = 0;
+    s_conn = ConnPhase::LIST;
+    if (Cap::isRunning()) Cap::stop();
+    WiFi.persistent(false);
+    WiFi.mode(WIFI_STA);
+    WiFi.disconnect(false, false);
+    delay(60);
+    int n = WiFi.scanNetworks(false, true);
+    if (n < 0) n = 0;
+    for (int i = 0; i < n && s_netN < 16; i++) {
+        String ss = WiFi.SSID(i);
+        if (ss.length() == 0) continue;
+        NetRow& r = s_nets[s_netN];
+        strncpy(r.ssid, ss.c_str(), sizeof(r.ssid) - 1);
+        r.ssid[sizeof(r.ssid) - 1] = '\0';
+        r.rssi = (int8_t)WiFi.RSSI(i);
+        wifi_auth_mode_t enc = WiFi.encryptionType(i);
+        r.open = (enc == WIFI_AUTH_OPEN);
+        s_netN++;
+    }
+    WiFi.scanDelete();
+    s_scanning = false;
+}
+
+static void saveHomeWifi(const char* pass) {
+    Net::setSta(s_pickSsid, pass ? pass : "");
+    Display::showToast("WIFI SAVED", 1000);
+}
+
+void show(SettingsPage page) {
+    s_active = true;
+    s_page = page;
+    s_idx = 0;
+    s_scroll = 0;
+    s_statScroll = 0;
+    s_editing = false;
+    s_text = false;
+    s_bind = false;
+    s_resetConfirm = false;
+    s_keyWas = true;
+    s_openMs = millis();
+    if (page == SettingsPage::CONNECT) {
+        s_conn = ConnPhase::LIST;
+        s_edit[0] = '\0';
+        Display::showToast("SCAN...", 600);
+        scanWifi();
+    }
+}
+
+bool isTyping() {
+    return s_text || s_bind ||
+           (s_page == SettingsPage::CONNECT && s_conn == ConnPhase::PASS);
+}
+
+void hide() {
+    s_active = false;
+    s_editing = false;
+    s_text = false;
+    s_bind = false;
+    s_resetConfirm = false;
+}
+
+bool isActive() { return s_active; }
+SettingsPage page() { return s_page; }
+
+const char* bottomHint() {
+    if (s_resetConfirm) return "ENT RESET  ESC CANCEL";
+    const bool showHelp = ((millis() - s_openMs) % 7500u) < 5000u;
+    if (s_page == SettingsPage::CONNECT) {
+        if (s_conn == ConnPhase::PASS)
+            return showHelp ? "TYPE WIFI PASSWORD" : "TYPE  BS ERASE  ENT SAVE  ESC BACK";
+        if (s_netN == 0)
+            return showHelp ? "NO NETWORKS FOUND" : "R RESCAN  ESC BACK";
+        return showHelp ? "SELECT HOME WIFI" : "^/v PICK  ENT SELECT  R RESCAN  ESC BACK";
+    }
+    if (s_page == SettingsPage::STATUS)
+        return showHelp ? "DEVICE AND STORAGE INFORMATION" : "^/v SCROLL  ESC BACK";
+    if (s_page == SettingsPage::RADIO_EDIT) {
+        if (!showHelp) return "^/v PICK  ENT EDIT  ESC BACK";
+        if (s_idx < s_editN) {
+            for (uint8_t k = 0; k < ALL_KNOBS_N; k++) {
+                if (ALL_RADIO_KNOBS[k].id == s_editItems[s_idx].id)
+                    return H_KNOBS[k];
+            }
+        }
+        return "RADIO DETAIL SETTINGS";
+    }
+    if (s_text) return showHelp ? "ENTER TEXT VALUE" : "TYPE  ENT SAVE  BS ERASE  ESC CANCEL";
+    if (s_bind) return showHelp ? "PRESS A KEY TO ASSIGN" : "PRESS KEY  BS CLEAR  ESC CANCEL";
+    if (s_page == SettingsPage::KEYS) {
+        if (showHelp && s_idx < sizeof(H_KEYS) / sizeof(H_KEYS[0])) return H_KEYS[s_idx];
+        return "ENT ASSIGN  BS CLEAR  ESC BACK";
+    }
+    if (s_editing) return showHelp ? "ADJUST SELECTED VALUE" : "^/v CHANGE  ENT DONE  ESC BACK";
+    uint8_t n = 0;
+    const Item* it = items(&n);
+    if (it && s_idx < n) {
+        if (showHelp) {
+            if (s_page == SettingsPage::RADIO && s_idx < sizeof(H_RADIO) / sizeof(H_RADIO[0]))
+                return H_RADIO[s_idx];
+            if (s_page == SettingsPage::SYSTEM && s_idx < sizeof(H_SYSTEM) / sizeof(H_SYSTEM[0]))
+                return H_SYSTEM[s_idx];
+            if (s_page == SettingsPage::BLE && s_idx < sizeof(H_BLE) / sizeof(H_BLE[0]))
+                return H_BLE[s_idx];
+            if (s_page == SettingsPage::SCENE && s_idx < sizeof(H_SCENE) / sizeof(H_SCENE[0]))
+                return H_SCENE[s_idx];
+            if (s_page == SettingsPage::SCENE_TREES &&
+                s_idx < sizeof(H_SCENE_TREES) / sizeof(H_SCENE_TREES[0]))
+                return H_SCENE_TREES[s_idx];
+            if (s_page == SettingsPage::SCENE_EFFECTS &&
+                s_idx < sizeof(H_SCENE_EFFECTS) / sizeof(H_SCENE_EFFECTS[0]))
+                return H_SCENE_EFFECTS[s_idx];
+            if (s_page == SettingsPage::SCENE_OTHER &&
+                s_idx < sizeof(H_SCENE_OTHER) / sizeof(H_SCENE_OTHER[0]))
+                return H_SCENE_OTHER[s_idx];
+            if (s_page == SettingsPage::FLORA && s_idx < sizeof(H_FLORA) / sizeof(H_FLORA[0]))
+                return H_FLORA[s_idx];
+        }
+        if (it[s_idx].kind == Kind::TOGGLE) return "ENT TOGGLE  ^/v MOVE  ESC BACK";
+        if (it[s_idx].kind == Kind::TEXT)
+            return it[s_idx].id == 16 ? "ENT TYPE CODE  ESC BACK" : "ENT TYPE NAME  ESC BACK";
+        if (it[s_idx].kind == Kind::ACTION) {
+            if (s_page == SettingsPage::RADIO && it[s_idx].id == 60)
+                return "ENT OPEN EDITOR  ESC BACK";
+            if (s_page == SettingsPage::SCENE && it[s_idx].id >= 71)
+                return "ENT OPEN SECTION  ESC BACK";
+            if (s_page == SettingsPage::SCENE_TREES && it[s_idx].id == 70)
+                return "ENT OPEN FLORA  ESC BACK";
+            return "ENT RESET RADIO  ESC BACK";
+        }
+        return "ENT EDIT  ^/v MOVE  ESC BACK";
+    }
+    return "^/v MOVE  ENT SELECT  ESC BACK";
+}
+
+static void updateConnect() {
+    auto keys = Keys::keysState();
+    bool up = Keys::isKeyPressed(';');
+    bool down = Keys::isKeyPressed('.');
+    bool tick = Keys::isKeyPressed('`') ||
+                Keys::isKeyPressed(27);
+    bool erase = Keys::isKeyPressed(KEY_BACKSPACE) || keys.del;
+    bool rescan = Keys::isKeyPressed('r') ||
+                  Keys::isKeyPressed('R');
+
+    if (s_conn == ConnPhase::PASS) {
+        if (keys.enter) {
+            if (strlen(s_edit) > 0 && strlen(s_edit) < 8) {
+                Display::showToast("PASS MIN 8", 1000);
+                return;
+            }
+            saveHomeWifi(s_edit);
+            s_conn = ConnPhase::LIST;
+            s_text = false;
+            SFX::play(SFX::CONFIRM);
+            return;
+        }
+        if (erase) {
+            size_t L = strlen(s_edit);
+            if (L) s_edit[L - 1] = '\0';
+            return;
+        }
+        if (tick) {
+            s_conn = ConnPhase::LIST;
+            s_text = false;
+            SFX::play(SFX::BACK_NAV);
+            return;
+        }
+        for (char c : keys.word) {
+            if (c < 32 || c >= 127 || c == '`') continue;
+            size_t L = strlen(s_edit);
+            if (L + 1 < sizeof(s_edit) && L < 63) {
+                s_edit[L] = c;
+                s_edit[L + 1] = '\0';
+            }
+        }
+        return;
+    }
+
+    if (tick) {
+        hide();
+        return;
+    }
+    if (rescan) {
+        Display::showToast("SCAN...", 500);
+        scanWifi();
+        SFX::play(SFX::CLICK);
+        return;
+    }
+    if (up && s_netIdx > 0) {
+        s_netIdx--;
+        if (s_netIdx < s_netScroll) s_netScroll = s_netIdx;
+        SFX::play(SFX::MENU_CLICK);
+        return;
+    }
+    if (down && s_netIdx + 1 < s_netN) {
+        s_netIdx++;
+        if (s_netIdx >= s_netScroll + VIS) s_netScroll = (uint8_t)(s_netIdx - VIS + 1);
+        SFX::play(SFX::MENU_CLICK);
+        return;
+    }
+    if (!keys.enter || s_netN == 0) return;
+    strncpy(s_pickSsid, s_nets[s_netIdx].ssid, sizeof(s_pickSsid) - 1);
+    s_pickSsid[sizeof(s_pickSsid) - 1] = '\0';
+    s_pickOpen = s_nets[s_netIdx].open;
+    if (s_pickOpen) {
+        saveHomeWifi("");
+        SFX::play(SFX::CONFIRM);
+        return;
+    }
+    s_edit[0] = '\0';
+    s_conn = ConnPhase::PASS;
+    s_text = true;
+    SFX::play(SFX::MENU_CLICK);
+}
+
+void update() {
+    if (!s_active) return;
+    if (App::windowHidden()) return;
+    if (!keyNewPress(s_keyWas)) return;
+
+    if (s_page == SettingsPage::CONNECT) {
+        updateConnect();
+        return;
+    }
+    if (s_page == SettingsPage::STATUS) {
+        auto keys = Keys::keysState();
+        bool up = Keys::isKeyPressed(';');
+        bool down = Keys::isKeyPressed('.');
+        if (keyEsc()) {
+            hide();
+            return;
+        }
+        const uint8_t statN = 10;
+        if (up && s_statScroll > 0) {
+            s_statScroll--;
+            SFX::play(SFX::MENU_CLICK);
+        } else if (down && s_statScroll + STAT_VIS < statN) {
+            s_statScroll++;
+            SFX::play(SFX::MENU_CLICK);
+        }
+        (void)keys;
+        return;
+    }
+
+    auto keys = Keys::keysState();
+    bool up = Keys::isKeyPressed(';');
+    bool down = Keys::isKeyPressed('.');
+    bool tick = keyEsc();
+    bool erase = Keys::isKeyPressed(KEY_BACKSPACE) || keys.del;
+    bool esc = tick;
+
+    if (s_resetConfirm) {
+        if (esc) {
+            s_resetConfirm = false;
+            SFX::play(SFX::BACK_NAV);
+        } else if (keys.enter) {
+            Config::resetRadio();
+            s_resetConfirm = false;
+            SFX::play(SFX::CONFIRM);
+            Display::showToast("RADIO RESET", 1000);
+        }
+        return;
+    }
+
+    uint8_t n = 0;
+    const Item* list = items(&n);
+    if (!list || n == 0) return;
+    const Item& cur = list[s_idx < n ? s_idx : 0];
+
+    if (s_text) {
+        if (keys.enter) {
+            if (cur.id == 16) {
+                auto same = [](const char* a, const char* b) {
+                    while (*a && *b) {
+                        char ca = *a++, cb = *b++;
+                        if (ca >= 'A' && ca <= 'Z') ca = (char)(ca - 'A' + 'a');
+                        if (cb >= 'A' && cb <= 'Z') cb = (char)(cb - 'A' + 'a');
+                        if (ca != cb) return false;
+                    }
+                    return *a == 0 && *b == 0;
+                };
+                s_text = false;
+                if (same(s_edit, "l3xik0")) {
+                    XP::unlockAll();
+                    SFX::play(SFX::LEVEL_UP);
+                    Display::showToast("ALL OPEN", 1600);
+                } else if (same(s_edit, "p0rkp0rk") || same(s_edit, "pork4") || same(s_edit, "o1nk4")) {
+                    Props::unlockAllFour();
+                    SFX::play(SFX::LEVEL_UP);
+                    Display::showToast("PROPS OPEN", 1600);
+                } else {
+                    SFX::play(SFX::ERROR);
+                    Display::showToast("NOPE", 900);
+                }
+                s_edit[0] = '\0';
+                return;
+            }
+            PersonalityConfig& p = Config::personality();
+            strncpy(p.name, s_edit, sizeof(p.name) - 1);
+            p.name[sizeof(p.name) - 1] = '\0';
+            if (!p.name[0]) strncpy(p.name, "Pig", sizeof(p.name) - 1);
+            Config::save();
+            s_text = false;
+            SFX::play(SFX::CONFIRM);
+            Display::showToast("NAME SAVED", 900);
+            return;
+        }
+        if (erase) {
+            size_t L = strlen(s_edit);
+            if (L) s_edit[L - 1] = '\0';
+            return;
+        }
+        if (tick) {
+            s_text = false;
+            SFX::play(SFX::BACK_NAV);
+            return;
+        }
+        for (char c : keys.word) {
+            if (c < 32 || c >= 127 || c == '`') continue;
+            size_t L = strlen(s_edit);
+            if (L + 1 < sizeof(s_edit) && L < 16) {
+                s_edit[L] = c;
+                s_edit[L + 1] = '\0';
+            }
+        }
+        return;
+    }
+
+    if (s_bind) {
+        if (tick) {
+            s_bind = false;
+            SFX::play(SFX::BACK_NAV);
+            return;
+        }
+        if (erase) {
+            Config::hotkeys().key[cur.id] = 0;
+            Config::save();
+            s_bind = false;
+            SFX::play(SFX::CONFIRM);
+            Display::showToast("CLEARED", 700);
+            return;
+        }
+        char picked = 0;
+        for (char c : keys.word) {
+            if (c < 32 || c >= 127) continue;
+            picked = c;
+            break;
+        }
+        if (!picked) return;
+        if (picked >= 'A' && picked <= 'Z') picked = (char)(picked - 'A' + 'a');
+        bool bad = (picked == '`' || picked == '~' || picked == ' ' ||
+                    picked == ';' || picked == '.' || picked == ',' || picked == '/');
+        if (bad) {
+            Display::showToast("KEY TAKEN", 800);
+            return;
+        }
+        HotkeyConfig& hk = Config::hotkeys();
+        for (uint8_t i = 0; i < HOTKEY_COUNT; i++) {
+            if (i != cur.id && hk.key[i] == picked) hk.key[i] = 0;
+        }
+        hk.key[cur.id] = picked;
+        Config::save();
+        s_bind = false;
+        SFX::play(SFX::CONFIRM);
+        char up = picked;
+        if (up >= 'a' && up <= 'z') up = (char)(up - 'a' + 'A');
+        char msg[12];
+        snprintf(msg, sizeof(msg), "KEY %c", up);
+        Display::showToast(msg, 800);
+        return;
+    }
+
+    if (esc) {
+        if (s_editing) {
+            s_editing = false;
+            SFX::play(SFX::BACK_NAV);
+            return;
+        }
+        // RADIO_EDIT в†’ back to RADIO, land on EDIT row
+        if (s_page == SettingsPage::RADIO_EDIT) {
+            s_page = SettingsPage::RADIO;
+            s_idx = 2; s_scroll = 0;
+            s_openMs = millis();
+            SFX::play(SFX::BACK_NAV);
+            return;
+        }
+        if (s_page == SettingsPage::FLORA ||
+            s_page == SettingsPage::SCENE_TREES ||
+            s_page == SettingsPage::SCENE_EFFECTS ||
+            s_page == SettingsPage::SCENE_OTHER) {
+            if (s_page == SettingsPage::FLORA) {
+                s_page = SettingsPage::SCENE_TREES;
+                s_idx = 0;
+            } else {
+                s_page = s_sceneParentPage;
+                s_idx = s_sceneParentIdx;
+            }
+            s_scroll = 0;
+            uint8_t parentCount = 0;
+            items(&parentCount);
+            keepVisible(parentCount);
+            s_openMs = millis();
+            SFX::play(SFX::BACK_NAV);
+            return;
+        }
+        hide();
+        return;
+    }
+
+    if (up || down) {
+        if (s_editing && cur.kind == Kind::VALUE) {
+            int next = getValue(cur) + (up ? cur.step : -cur.step);
+            if (setValue(cur, next)) SFX::play(SFX::CLICK);
+            return;
+        }
+        s_editing = false;
+        const uint8_t oldIdx = s_idx;
+        if (up && s_idx > 0) s_idx--;
+        else if (down && s_idx + 1 < n) s_idx++;
+        if (s_idx != oldIdx) s_openMs = millis();
+        keepVisible(n);
+        SFX::play(SFX::MENU_CLICK);
+        return;
+    }
+
+    if (erase && cur.kind == Kind::BIND) {
+        Config::hotkeys().key[cur.id] = 0;
+        Config::save();
+        SFX::play(SFX::CONFIRM);
+        Display::showToast("CLEARED", 700);
+        return;
+    }
+
+    if (!keys.enter) return;
+
+    if (cur.kind == Kind::BIND) {
+        s_bind = true;
+        SFX::play(SFX::MENU_CLICK);
+        Display::showToast("PRESS KEY", 700);
+        return;
+    }
+
+    if (cur.kind == Kind::ACTION) {
+        SettingsPage nextScenePage = s_page;
+        if (s_page == SettingsPage::SCENE && cur.id == 71)
+            nextScenePage = SettingsPage::SCENE_TREES;
+        else if (s_page == SettingsPage::SCENE && cur.id == 72)
+            nextScenePage = SettingsPage::SCENE_EFFECTS;
+        else if (s_page == SettingsPage::SCENE && cur.id == 73)
+            nextScenePage = SettingsPage::SCENE_OTHER;
+        else if (s_page == SettingsPage::SCENE_TREES && cur.id == 70)
+            nextScenePage = SettingsPage::FLORA;
+        if (nextScenePage != s_page) {
+            if (nextScenePage != SettingsPage::FLORA) {
+                s_sceneParentPage = s_page;
+                s_sceneParentIdx = s_idx;
+            }
+            s_page = nextScenePage;
+            s_idx = 0;
+            s_scroll = 0;
+            s_openMs = millis();
+            SFX::play(SFX::MENU_CLICK);
+        } else if (s_page == SettingsPage::RADIO && cur.id == 19) {
+            s_resetConfirm = true;
+            SFX::play(SFX::MENU_CLICK);
+        } else if (s_page == SettingsPage::RADIO && cur.id == 60) {
+            // EDIT: build knob list for current method and open RADIO_EDIT
+            buildEditItems();
+            if (s_editN == 0) {
+                SFX::play(SFX::ERROR);
+                Display::showToast("NO EDIT KNOBS", 1000);
+                return;
+            }
+            s_page = SettingsPage::RADIO_EDIT;
+            s_idx = 0; s_scroll = 0;
+            s_openMs = millis();
+            SFX::play(SFX::MENU_CLICK);
+            char toast[24];
+            snprintf(toast, sizeof(toast), "EDIT: %s", currentMethodName());
+            Display::showToast(toast, 800);
+        } else if (s_page == SettingsPage::RADIO_EDIT && cur.id == 99) {
+            // Back from RADIO_EDIT
+            s_page = SettingsPage::RADIO;
+            s_idx = 2; s_scroll = 0; // land on EDIT row
+            s_openMs = millis();
+            SFX::play(SFX::BACK_NAV);
+        }
+        return;
+    }
+
+    if (cur.kind == Kind::TOGGLE) {
+        int next = getValue(cur) ? 0 : 1;
+        if (setValue(cur, next)) {
+            SFX::play(SFX::CONFIRM);
+            Display::showToast(next ? "YES" : "NO", 700);
+        }
+        return;
+    }
+    if (cur.kind == Kind::TEXT) {
+        if (cur.id == 16) s_edit[0] = '\0';
+        else {
+            strncpy(s_edit, Config::personality().name, sizeof(s_edit) - 1);
+            s_edit[sizeof(s_edit) - 1] = '\0';
+        }
+        s_text = true;
+        SFX::play(SFX::MENU_CLICK);
+        return;
+    }
+    s_editing = !s_editing;
+    s_openMs = millis();
+    SFX::play(SFX::MENU_CLICK);
+}
+
+static void drawConnect(M5Canvas& canvas) {
+    const uint16_t UI_BG = 0x2145, UI_PANEL = 0x3A8A, UI_TITLE = 0xFFE0;
+    const uint16_t UI_TEXT = 0xEF5D, UI_DIM = 0x9CD3, UI_SEL = 0xFDB6;
+    canvas.fillSprite(UI_BG);
+    canvas.setTextDatum(top_center);
+    canvas.setTextSize(2);
+    canvas.setTextColor(UI_TITLE);
+    canvas.drawString("CONNECT", DISPLAY_W / 2, 2);
+    canvas.drawLine(10, 20, DISPLAY_W - 10, 20, UI_TITLE);
+    canvas.setTextDatum(top_left);
+    canvas.setTextSize(1);
+
+    if (s_conn == ConnPhase::PASS) {
+        canvas.setTextColor(UI_DIM);
+        canvas.drawString("PASS FOR", 8, 26);
+        canvas.setTextColor(UI_TITLE);
+        canvas.setTextSize(2);
+        char sn[18];
+        strncpy(sn, s_pickSsid, sizeof(sn) - 1);
+        sn[sizeof(sn) - 1] = '\0';
+        canvas.drawString(sn, 8, 40);
+        canvas.setTextSize(1);
+        canvas.fillRect(5, 64, DISPLAY_W - 10, 18, UI_SEL);
+        canvas.setTextColor(UI_BG);
+        char show[40];
+        snprintf(show, sizeof(show), ">%s", s_edit);
+        canvas.drawString(show, 10, 68);
+        return;
+    }
+
+    if (s_netN == 0) {
+        canvas.setTextColor(UI_TITLE);
+        canvas.drawString("NO NETS", 8, 40);
+        return;
+    }
+
+    canvas.setTextSize(2);
+    const int y0 = 24;
+    const int lh = 20;
+    for (uint8_t i = 0; i < VIS && (s_netScroll + i) < s_netN; i++) {
+        uint8_t idx = s_netScroll + i;
+        int y = y0 + i * lh;
+        bool sel = (idx == s_netIdx);
+        if (sel) {
+            canvas.fillRect(5, y - 2, DISPLAY_W - 10, lh, UI_SEL);
+            canvas.setTextColor(UI_BG);
+        } else {
+            canvas.fillRect(5, y - 1, DISPLAY_W - 10, lh - 2, UI_PANEL);
+            canvas.setTextColor(UI_TEXT);
+        }
+        char name[16];
+        strncpy(name, s_nets[idx].ssid, sizeof(name) - 1);
+        name[sizeof(name) - 1] = '\0';
+        canvas.drawString(name, 12, y);
+        canvas.setTextDatum(top_right);
+        canvas.setTextSize(1);
+        char rs[10];
+        snprintf(rs, sizeof(rs), "%s%d", s_nets[idx].open ? "OP " : "",
+                 (int)s_nets[idx].rssi);
+        canvas.drawString(rs, DISPLAY_W - 10, y + 4);
+        canvas.setTextDatum(top_left);
+        canvas.setTextSize(2);
+    }
+}
+
+static void drawStatus(M5Canvas& canvas) {
+    const uint16_t UI_BG = 0x2145, UI_TITLE = 0xFFE0;
+    const uint16_t UI_TEXT = 0xEF5D, UI_DIM = 0x9CD3, UI_GOLD = 0xFE60;
+    canvas.fillSprite(UI_BG);
+    canvas.setFont(&fonts::Font0);
+    canvas.setTextSize(2);
+    canvas.setTextDatum(top_center);
+    canvas.setTextColor(UI_TITLE);
+    canvas.drawString("STATUS", DISPLAY_W / 2, 2);
+    canvas.drawLine(10, 20, DISPLAY_W - 10, 20, UI_TITLE);
+
+    canvas.setTextSize(1);
+    canvas.setTextDatum(top_left);
+
+    char lvl[16], xp[16], batt[16], wifi[18], ver[16];
+    snprintf(lvl, sizeof(lvl), "%u", (unsigned)XP::getLevel());
+    snprintf(xp, sizeof(xp), "%lu/%lu",
+             (unsigned long)XP::intoLevel(), (unsigned long)XP::needForNext());
+    int32_t blv = M5.Power.getBatteryLevel();
+    if (blv < 0) blv = 0;
+    if (blv > 100) blv = 100;
+    const bool chg = (M5.Power.isCharging() == m5::Power_Class::is_charging);
+    snprintf(batt, sizeof(batt), "%d%%%s", (int)blv, chg ? " CHG" : "");
+    wifi[0] = '-'; wifi[1] = '-'; wifi[2] = '\0';
+    if (Net::hasStaCreds() && Net::cfg().staSsid[0]) {
+        strncpy(wifi, Net::cfg().staSsid, sizeof(wifi) - 1);
+        wifi[sizeof(wifi) - 1] = '\0';
+    }
+    snprintf(ver, sizeof(ver), "v%s", ON3PORK_VERSION);
+
+    const char* k[] = { "LVL", "XP", "BOARD", "BATT", "SD", "WIFI", "WPA", "PWN", "OHC", "VER" };
+    const char* v[] = {
+        lvl, xp, Board::modelLabel(), batt,
+        Config::isSDAvailable() ? "YES" : "NO",
+        wifi,
+        Net::cfg().wpaSecKey[0] ? "YES" : "NO",
+        Net::cfg().pwncrackKey[0] ? "YES" : "NO",
+        Net::cfg().ohcEmail[0] ? "YES" : "NO",
+        ver
+    };
+    const uint8_t statN = 10;
+    if (s_statScroll > statN - STAT_VIS) {
+        s_statScroll = (statN > STAT_VIS) ? (uint8_t)(statN - STAT_VIS) : 0;
+    }
+
+    int y = 24;
+    const int lh = 12;
+    for (uint8_t i = 0; i < STAT_VIS; i++) {
+        uint8_t idx = (uint8_t)(s_statScroll + i);
+        if (idx >= statN) break;
+        canvas.setTextColor(UI_DIM);
+        canvas.drawString(k[idx], 8, y);
+        canvas.setTextColor(idx == 9 ? UI_GOLD : UI_TEXT);
+        canvas.drawString(v[idx], 78, y);
+        if (idx == 1) {
+            int barW = 80;
+            uint32_t need = XP::needForNext();
+            int fill = (need > 0) ? (int)(XP::intoLevel() * (uint32_t)barW / need) : barW;
+            if (XP::getLevel() >= 50) fill = barW;
+            canvas.fillRect(78, y + 9, barW, 3, UI_DIM);
+            if (fill > 0) canvas.fillRect(78, y + 9, fill, 3, UI_GOLD);
+        }
+        y += lh;
+    }
+
+    canvas.setTextColor(UI_DIM);
+    if (s_statScroll > 0) canvas.drawString("^", DISPLAY_W - 12, 22);
+    if (s_statScroll + STAT_VIS < statN)
+        canvas.drawString("v", DISPLAY_W - 12, MAIN_H - 22);
+
+    canvas.setFont(&fonts::Font0);
+}
+
+void draw(M5Canvas& canvas) {
+    if (s_page == SettingsPage::CONNECT) {
+        drawConnect(canvas);
+        return;
+    }
+    if (s_page == SettingsPage::STATUS) {
+        drawStatus(canvas);
+        return;
+    }
+
+    const uint16_t UI_BG = 0x2145, UI_PANEL = 0x3A8A, UI_TITLE = 0xFFE0;
+    const uint16_t UI_TEXT = 0xEF5D, UI_DIM = 0x9CD3, UI_SEL = 0xFDB6;
+    canvas.fillSprite(UI_BG);
+
+    const char* title = "PIG";
+    if (s_page == SettingsPage::SYSTEM) title = "SYSTEM";
+    else if (s_page == SettingsPage::FLORA) title = "FLORA";
+    else if (s_page == SettingsPage::SCENE_TREES) title = "TREES";
+    else if (s_page == SettingsPage::SCENE_EFFECTS) title = "EFFECTS";
+    else if (s_page == SettingsPage::SCENE_OTHER) title = "OTHER";
+    else if (s_page == SettingsPage::RADIO) title = "RADIO";
+    else if (s_page == SettingsPage::RADIO_EDIT) {
+        // Show "EDIT: METHODNAME" as title
+        static char editTitle[24];
+        snprintf(editTitle, sizeof(editTitle), "EDIT: %s", currentMethodName());
+        title = editTitle;
+    }
+    else if (s_page == SettingsPage::BLE) title = "BLE";
+    else if (s_page == SettingsPage::KEYS) title = "KEYS";
+
+    canvas.setTextDatum(top_center);
+    canvas.setTextSize(2);
+    canvas.setTextColor(UI_TITLE);
+    canvas.drawString(title, DISPLAY_W / 2, 2);
+    canvas.drawLine(10, 20, DISPLAY_W - 10, 20, UI_TITLE);
+
+    uint8_t n = 0;
+    const Item* list = items(&n);
+    canvas.setTextDatum(top_left);
+    canvas.setTextSize(2);
+    const int y0 = 24;
+    const int lh = 20;
+    for (uint8_t i = 0; i < VIS && (s_scroll + i) < n; i++) {
+        uint8_t idx = s_scroll + i;
+        int y = y0 + i * lh;
+        bool sel = (idx == s_idx);
+        if (sel) {
+            canvas.fillRect(5, y - 2, DISPLAY_W - 10, lh, UI_SEL);
+            canvas.fillRect(5, y - 2, 3, lh, UI_TITLE);
+            canvas.setTextColor(UI_BG);
+        } else {
+            canvas.fillRect(5, y - 1, DISPLAY_W - 10, lh - 2, UI_PANEL);
+            canvas.setTextColor(UI_TEXT);
+        }
+        canvas.drawString(list[idx].label, 12, y);
+        char val[22];
+        formatValue(list[idx], val, sizeof(val), sel && (s_editing || s_bind));
+        canvas.setTextDatum(top_right);
+        canvas.drawString(val, DISPLAY_W - 10, y);
+        canvas.setTextDatum(top_left);
+    }
+
+    canvas.setTextSize(1);
+    canvas.setTextColor(UI_DIM);
+    if (s_scroll > 0) canvas.drawString("^", DISPLAY_W - 12, 22);
+    if (s_scroll + VIS < n) canvas.drawString("v", DISPLAY_W - 12, y0 + (VIS - 1) * lh);
+
+    if (s_resetConfirm) {
+        const int16_t boxX = 20, boxY = 34, boxW = DISPLAY_W - 40, boxH = 42;
+        canvas.fillRoundRect(boxX, boxY, boxW, boxH, 4, 0x1082);
+        canvas.drawRoundRect(boxX, boxY, boxW, boxH, 4, 0xFFE0);
+        canvas.setTextDatum(top_center);
+        canvas.setTextColor(0xFFE0);
+        canvas.drawString("RESET RADIO SETTINGS?", DISPLAY_W / 2, boxY + 7);
+        canvas.setTextColor(UI_TEXT);
+        canvas.drawString("ENT = RESET   ESC = CANCEL",
+                          DISPLAY_W / 2, boxY + 23);
+        canvas.setTextDatum(top_left);
+    }
+
+}
+
+}  // namespace SettingsMenu
+
+

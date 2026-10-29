@@ -1,0 +1,1418 @@
+﻿// Rewritten 2.4 GHz spectrum for 0N3P0rK.
+// Look: OnePork lobes / grass / waterfall. Guts: our radio, no NetworkRecon.
+#include "spectrum.h"
+#include "../ui/display.h"
+#include "../ui/keys.h"
+#include "../cap/sniffer.h"
+#include "../cap/hc22000.h"
+#include "../core/wsl_bypasser.h"
+#include "../core/config.h"
+#include "../piglet/avatar.h"
+#include "../piglet/weather.h"
+#include "../audio/sfx.h"
+#include "../core/app.h"
+#include <M5Unified.h>
+#include <WiFi.h>
+#include <esp_wifi.h>
+#include <string.h>
+#include <stdio.h>
+#include <ctype.h>
+#include <stdlib.h>
+
+namespace SpectrumMode {
+
+static const int L = 4;
+static const int R = 236;
+static const int W = R - L;
+static const int TOP = 12;
+static const int BOT = 56;
+static const int WF_TOP = 58;
+static const int WF_ROWS = 8;
+static const int CH_Y = 67;
+static const int INFO_Y = 1;
+static const int LIST_Y = 77;
+static const int8_t RSSI_MIN = -100;
+static const int8_t RSSI_MAX = -60;
+static const int8_t NOISE = -92;
+
+static const float CENTER0 = 2442.0f;
+static const float WIDTH0 = 72.0f;
+
+// Band view window. WIDTH0 = the whole 2.4 GHz band (all 13 channels).
+// Smaller span = zoomed in; s_center pans. Kept inside [BAND_LO, BAND_HI].
+static const float BAND_LO = 2406.0f;
+static const float BAND_HI = 2478.0f;
+static const float ZOOMS[] = {72.0f, 40.0f, 24.0f, 14.0f, 8.0f, 5.0f};
+static const uint8_t ZOOM_N = 6;
+
+static const uint8_t MAX_NETS = 24;
+static const uint8_t MAX_CLI = 8;
+static const uint8_t VIS_CLI = 5;
+static const uint32_t STALE_NET = 12000;
+static const uint32_t STALE_CLI = 25000;
+static const uint8_t HOP[] = {1, 6, 11, 2, 3, 4, 5, 7, 8, 9, 10, 12, 13};
+static const uint8_t HOP_N = 13;
+static const uint16_t HOP_MS = 220;
+
+enum Auth : uint8_t { A_OPEN = 0, A_WEP, A_WPA, A_WPA2, A_WPA3, A_MIX };
+enum Filt : uint8_t { F_ALL = 0, F_VULN, F_SOFT, F_HIDDEN };
+enum Phase : uint8_t { SWEEP = 0, LOCK, HUNT };
+
+struct Client {
+    uint8_t mac[6];
+    int8_t rssi;
+    uint32_t lastSeen;
+    uint16_t pkts;
+};
+
+struct Net {
+    uint8_t bssid[6];
+    char ssid[33];
+    uint8_t ch;
+    int8_t rssi;
+    uint32_t lastSeen;
+    Auth auth;
+    bool pmf;
+    bool hidden;
+    float freq;
+    Client cli[MAX_CLI];
+    uint8_t nCli;
+};
+
+static const float SINC[45] = {
+    0.00f, 0.07f, 0.11f, 0.13f, 0.11f,
+    0.07f, 0.00f, 0.09f, 0.15f, 0.18f,
+    0.15f, 0.00f, 0.17f, 0.27f, 0.33f,
+    0.37f, 0.50f, 0.65f, 0.80f, 0.91f,
+    0.97f, 1.00f, 1.00f,
+    1.00f, 0.97f, 0.91f, 0.80f, 0.65f,
+    0.50f, 0.37f, 0.33f, 0.27f, 0.17f,
+    0.00f, 0.15f, 0.18f, 0.15f, 0.09f,
+    0.00f, 0.07f, 0.11f, 0.13f, 0.11f,
+    0.07f, 0.00f
+};
+
+static bool s_run = false;
+static volatile bool s_busy = false;
+static Phase s_phase = SWEEP;
+static Filt s_filt = F_ALL;
+static Net* s_net = nullptr;
+static uint8_t s_nNet = 0;
+static int8_t s_sel = -1;
+static uint8_t s_selMac[6];
+static bool s_hasSel = false;
+static float s_center = CENTER0;
+static float s_width = WIDTH0;
+static uint8_t s_zoomI = 0;
+static uint8_t s_hopI = 0;
+static uint8_t s_ch = 6;
+static uint32_t s_lastHop = 0;
+static uint32_t s_lastPrune = 0;
+static bool s_keyWas = false;
+static uint8_t s_monBssid[6];
+static uint8_t s_monCh = 6;
+// Spectrum-local HS depth (seeds from RADIO on start). D cycles in LOCK/HUNT.
+// 0 = PAIR (M1+M2), 1 = +M3, 2 = FULL (M1-M4).
+static uint8_t s_huntDepth = 0;
+
+static const char* huntDepthName(uint8_t d) {
+    if (d == 1) return "+M3";
+    if (d >= 2) return "FULL";
+    return "PAIR";
+}
+
+static void applyHuntDepth() {
+    if (s_huntDepth > 2) s_huntDepth = 2;
+    Cap::setHsDepth(s_huntDepth);
+}
+
+static void cycleHuntDepth() {
+    s_huntDepth = (uint8_t)((s_huntDepth + 1) % 3);
+    applyHuntDepth();
+    char msg[20];
+    snprintf(msg, sizeof(msg), "HS %s", huntDepthName(s_huntDepth));
+    Display::showToast(msg, 900);
+    SFX::play(SFX::MENU_CLICK);
+}
+
+static int8_t s_cliSel = 0;
+static uint8_t s_cliScroll = 0;
+static bool s_reveal = false;
+static uint32_t s_revealT0 = 0;
+static uint32_t s_revealBurst = 0;
+static volatile uint32_t s_pktN = 0;
+static uint32_t s_pps = 0;
+static uint32_t s_ppsT0 = 0;
+static volatile bool s_beepCli = false;
+static uint8_t s_apMac[6];
+
+static int8_t s_col[W];
+static int8_t s_persist[W];
+static uint8_t* s_wf = nullptr;
+static uint8_t s_wfRow = 0;
+static uint32_t s_wfT0 = 0;
+static uint16_t s_noise = 0xACE1;
+static uint16_t s_chRate[14];
+static uint32_t s_chHit[14];
+static uint32_t s_chSnap[14];
+static uint32_t s_rateT0 = 0;
+
+static bool allocateRuntimeBuffers() {
+    if (s_net && s_wf) return true;
+    if (!s_net) s_net = static_cast<Net*>(malloc(sizeof(Net) * MAX_NETS));
+    if (!s_wf) s_wf = static_cast<uint8_t*>(malloc((size_t)WF_ROWS * W));
+    if (s_net && s_wf) return true;
+    free(s_net);
+    free(s_wf);
+    s_net = nullptr;
+    s_wf = nullptr;
+    return false;
+}
+
+static void freeRuntimeBuffers() {
+    free(s_net);
+    free(s_wf);
+    s_net = nullptr;
+    s_wf = nullptr;
+}
+
+static uint8_t noise7() {
+    s_noise ^= (uint16_t)(s_noise << 7);
+    s_noise ^= (uint16_t)(s_noise >> 9);
+    s_noise ^= (uint16_t)(s_noise << 8);
+    return (uint8_t)(s_noise & 7);
+}
+
+static bool macEq(const uint8_t* a, const uint8_t* b) { return memcmp(a, b, 6) == 0; }
+static bool macMcast(const uint8_t* m) { return (m[0] & 1) != 0; }
+static bool macZero(const uint8_t* m) {
+    return !(m[0] | m[1] | m[2] | m[3] | m[4] | m[5]);
+}
+
+static float chToFreq(uint8_t ch) {
+    if (ch < 1) ch = 1;
+    if (ch > 13) ch = 13;
+    return 2412.0f + (float)(ch - 1) * 5.0f;
+}
+
+static int freqToX(float f) {
+    float left = s_center - s_width * 0.5f;
+    float t = (f - left) / s_width;
+    return L + (int)(t * (float)W);
+}
+
+static int rssiToY(int8_t rssi) {
+    if (rssi < RSSI_MIN) rssi = RSSI_MIN;
+    if (rssi > RSSI_MAX) rssi = RSSI_MAX;
+    float t = (float)(rssi - RSSI_MIN) / (float)(RSSI_MAX - RSSI_MIN);
+    int y = BOT - (int)(t * (float)(BOT - TOP));
+    if (y < TOP) y = TOP;
+    if (y > BOT) y = BOT;
+    return y;
+}
+
+static uint16_t blend565(uint16_t foreground, uint16_t background,
+                         uint8_t foregroundWeight) {
+    uint8_t backgroundWeight = (uint8_t)(255 - foregroundWeight);
+    uint32_t r = (((foreground >> 11) & 0x1F) * foregroundWeight +
+                  ((background >> 11) & 0x1F) * backgroundWeight) / 255;
+    uint32_t g = (((foreground >> 5) & 0x3F) * foregroundWeight +
+                  ((background >> 5) & 0x3F) * backgroundWeight) / 255;
+    uint32_t b = ((foreground & 0x1F) * foregroundWeight +
+                  (background & 0x1F) * backgroundWeight) / 255;
+    return (uint16_t)((r << 11) | (g << 5) | b);
+}
+
+struct SpectrumPalette {
+    uint16_t signal;
+    uint16_t accent;
+};
+
+static SpectrumPalette seasonPalette() {
+    switch (Weather::getActiveSeason()) {
+        case Season::SPRING: return {0x07E0, 0xF81F};
+        case Season::SUMMER: return {0x07FF, 0xFFE0};
+        case Season::AUTUMN: return {0xFD20, 0xF800};
+        case Season::WINTER: return {0xBDF7, 0x07FF};
+        case Season::RETRO:  return {0xC618, 0xFBE0};
+        case Season::NOIR:   return {0xFE60, 0xC480};
+        case Season::CITY:   return {0x07FF, 0xFD20};
+        case Season::DESERT: return {0xFEA0, 0x07E0};
+    }
+    return {UiStyle::CYAN, UiStyle::GOLD};
+}
+
+// --- band view: pan / zoom ------------------------------------------------
+static void clearWaterfall() {
+    if (s_wf) memset(s_wf, 0, (size_t)WF_ROWS * W);
+}
+
+static void clampView() {
+    if (s_width > ZOOMS[0]) s_width = ZOOMS[0];
+    if (s_width < ZOOMS[ZOOM_N - 1]) s_width = ZOOMS[ZOOM_N - 1];
+    float half = s_width * 0.5f;
+    if (s_center < BAND_LO + half) s_center = BAND_LO + half;
+    if (s_center > BAND_HI - half) s_center = BAND_HI - half;
+}
+
+static void panView(int dir) {
+    if (s_width >= ZOOMS[0]) {
+        Display::showToast("FULL BAND", 700);
+        return;
+    }
+    s_center += (float)dir * (s_width * 0.25f);
+    clampView();
+    clearWaterfall();
+}
+
+static void zoomView(int dir) {
+    int ni = (int)s_zoomI + dir;
+    if (ni < 0) ni = 0;
+    if (ni > (int)ZOOM_N - 1) ni = (int)ZOOM_N - 1;
+    if (ni == (int)s_zoomI) return;
+    s_zoomI = (uint8_t)ni;
+    s_width = ZOOMS[s_zoomI];
+    clampView();
+    clearWaterfall();
+    char m[20];
+    snprintf(m, sizeof(m), "SPAN %.0fMHZ", s_width);
+    Display::showToast(m, 700);
+}
+
+static void resetView() {
+    s_zoomI = 0;
+    s_width = WIDTH0;
+    s_center = CENTER0;
+    clampView();
+    clearWaterfall();
+    Display::showToast("FULL BAND", 700);
+}
+
+// Recenter only if a network would fall outside the current window.
+static void ensureVisible(float freq) {
+    float half = s_width * 0.5f;
+    if (freq < s_center - half + 1.0f || freq > s_center + half - 1.0f) {
+        s_center = freq;
+        clampView();
+        clearWaterfall();
+    }
+}
+
+static bool chVisible(uint8_t ch) {
+    float f = chToFreq(ch);
+    float half = s_width * 0.5f;
+    return f >= s_center - half - 2.5f && f <= s_center + half + 2.5f;
+}
+
+static float sincAmp(float dist) {
+    float p = dist + 22.0f;
+    if (p < 0 || p > 44.0f) return 0;
+    int i = (int)p;
+    float f = p - (float)i;
+    if (i >= 44) return SINC[44];
+    return SINC[i] + f * (SINC[i + 1] - SINC[i]);
+}
+
+static bool vuln(Auth a) { return a == A_OPEN || a == A_WEP || a == A_WPA; }
+
+static const char* authStr(Auth a) {
+    switch (a) {
+        case A_OPEN: return "OPEN";
+        case A_WEP:  return "WEP";
+        case A_WPA:  return "WPA";
+        case A_WPA2: return "WPA2";
+        case A_WPA3: return "WPA3";
+        default:     return "MIX";
+    }
+}
+
+static bool passFilt(const Net& n) {
+    switch (s_filt) {
+        case F_VULN:   return vuln(n.auth);
+        case F_SOFT:   return !n.pmf;
+        case F_HIDDEN: return n.hidden;
+        default:       return true;
+    }
+}
+
+static int findNet(const uint8_t* bssid) {
+    for (uint8_t i = 0; i < s_nNet; i++)
+        if (macEq(s_net[i].bssid, bssid)) return (int)i;
+    return -1;
+}
+
+static void setSel(int i) {
+    if (i < 0 || i >= (int)s_nNet) {
+        s_sel = -1;
+        s_hasSel = false;
+        return;
+    }
+    s_sel = (int8_t)i;
+    memcpy(s_selMac, s_net[i].bssid, 6);
+    s_hasSel = true;
+}
+
+static void syncSel() {
+    if (!s_hasSel) {
+        s_sel = -1;
+        return;
+    }
+    s_sel = (int8_t)findNet(s_selMac);
+}
+
+static bool netHeld(int i) {
+    if (i < 0 || i >= (int)s_nNet) return false;
+    if (s_hasSel && macEq(s_net[i].bssid, s_selMac)) return true;
+    if (s_phase != SWEEP && macEq(s_net[i].bssid, s_monBssid)) return true;
+    return false;
+}
+
+static int nextFiltered(int start, int dir) {
+    if (s_nNet == 0) return -1;
+    if (start < 0) start = dir > 0 ? -1 : 0;
+    for (uint8_t k = 0; k < s_nNet; k++) {
+        int i = start + dir * ((int)k + 1);
+        while (i < 0) i += s_nNet;
+        while (i >= s_nNet) i -= s_nNet;
+        if (passFilt(s_net[i])) return i;
+    }
+    return start;
+}
+
+static int nextSel(int dir) {
+    return nextFiltered(s_sel, dir);
+}
+
+static void parseAuth(const uint8_t* p, uint16_t len, Auth& auth, bool& pmf) {
+    auth = A_OPEN;
+    pmf = false;
+    bool rsn = false, wpa = false, mfpr = false;
+    uint16_t o = 36;
+    while (o + 2 < len) {
+        uint8_t t = p[o], n = p[o + 1];
+        if (o + 2 + n > len) break;
+        if (t == 0x30 && n >= 2) {
+            rsn = true;
+            // 32-bit offset/end on purpose: pc/ac are attacker-controlled
+            // (straight from a radio frame) and pc*4 can reach ~262KB.
+            // The old uint16_t q/end truncated that back into 16 bits on
+            // `q += 2 + pc*4`, so a crafted/corrupt beacon could wrap q to
+            // some unrelated small value that still passed the `q+2<=end`
+            // check, making p[q]/p[q+1] an out-of-bounds read past this
+            // IE (and potentially past the packet buffer). uint32_t just
+            // can't wrap at these magnitudes, so it can't happen here.
+            uint32_t q = (uint32_t)o + 8;
+            uint32_t end = (uint32_t)o + 2 + n;
+            if (q + 2 <= end) {
+                uint16_t pc = p[q] | ((uint16_t)p[q + 1] << 8);
+                q += 2 + (uint32_t)pc * 4;
+                if (q + 2 <= end) {
+                    uint16_t ac = p[q] | ((uint16_t)p[q + 1] << 8);
+                    q += 2 + (uint32_t)ac * 4;
+                    if (q + 2 <= end) {
+                        uint16_t cap = p[q] | ((uint16_t)p[q + 1] << 8);
+                        if (cap & 0x0080) pmf = true;
+                        if (cap & 0x0040) { pmf = true; mfpr = true; }
+                    }
+                }
+            }
+        } else if (t == 0xDD && n >= 8 &&
+                   p[o + 2] == 0x00 && p[o + 3] == 0x50 &&
+                   p[o + 4] == 0xF2 && p[o + 5] == 0x01) {
+            wpa = true;
+        }
+        o = (uint16_t)(o + 2 + n);
+    }
+    if (rsn && mfpr) auth = A_WPA3;
+    else if (rsn && wpa) auth = A_MIX;
+    else if (rsn) auth = A_WPA2;
+    else if (wpa) auth = A_WPA;
+}
+
+static void onBeacon(const uint8_t* bssid, uint8_t rxCh, uint8_t ds, int8_t rssi,
+                     const char* ssid, Auth auth, bool pmf, bool probe) {
+    (void)probe; // kept in the signature for call-site symmetry with onRx(); unused here
+    if (s_busy) return;
+    int idx = findNet(bssid);
+    if (idx < 0) {
+        if (s_nNet >= MAX_NETS) {
+            int worst = -1;
+            for (uint8_t i = 0; i < s_nNet; i++) {
+                if (netHeld((int)i)) continue;
+                if (worst < 0 || s_net[i].rssi < s_net[worst].rssi) worst = (int)i;
+            }
+            if (worst < 0) return;
+            idx = worst;
+            memset(&s_net[idx], 0, sizeof(Net));
+            memcpy(s_net[idx].bssid, bssid, 6);
+        } else {
+            idx = (int)s_nNet++;
+            memset(&s_net[idx], 0, sizeof(Net));
+            memcpy(s_net[idx].bssid, bssid, 6);
+        }
+    }
+    Net& n = s_net[idx];
+    if (ds >= 1 && ds <= 13) n.ch = ds;
+    else if (n.ch < 1 || n.ch > 13) {
+        if (rxCh >= 1 && rxCh <= 13) n.ch = rxCh;
+        else return;
+    }
+    n.rssi = rssi;
+    n.lastSeen = millis();
+    n.auth = auth;
+    n.pmf = pmf;
+    n.freq = chToFreq(n.ch);
+    if (!s_hasSel && passFilt(n)) setSel(idx);
+    if (ssid && ssid[0]) {
+        strncpy(n.ssid, ssid, 32);
+        n.ssid[32] = 0;
+        n.hidden = false;
+    } else if (!n.ssid[0]) {
+        n.hidden = true;
+    }
+}
+
+static void trackCli(const uint8_t* bssid, const uint8_t* mac, int8_t rssi) {
+    if (s_busy || !mac || macMcast(mac) || macZero(mac)) return;
+    if (macEq(mac, bssid) || macEq(mac, s_apMac)) return;
+    int idx = findNet(bssid);
+    if (idx < 0) return;
+    Net& n = s_net[idx];
+    int c = -1;
+    for (uint8_t i = 0; i < n.nCli; i++)
+        if (macEq(n.cli[i].mac, mac)) { c = (int)i; break; }
+    if (c < 0) {
+        if (n.nCli >= MAX_CLI) return;
+        c = (int)n.nCli++;
+        memset(&n.cli[c], 0, sizeof(Client));
+        memcpy(n.cli[c].mac, mac, 6);
+        s_beepCli = true;
+    }
+    n.cli[c].rssi = rssi;
+    n.cli[c].lastSeen = millis();
+    if (n.cli[c].pkts < 60000) n.cli[c].pkts++;
+}
+
+static void onData(const uint8_t* p, uint16_t len, int8_t rssi) {
+    if (len < 24 || s_phase != LOCK) return;
+    uint16_t fc = p[0] | ((uint16_t)p[1] << 8);
+    bool toDs = fc & 0x0100;
+    bool fromDs = fc & 0x0200;
+    const uint8_t* a1 = p + 4;
+    const uint8_t* a2 = p + 10;
+    const uint8_t* a3 = p + 16;
+    if (toDs && !fromDs) trackCli(a1, a2, rssi);
+    else if (!toDs && fromDs) trackCli(a2, a1, rssi);
+    else if (!toDs && !fromDs) {
+        if (macEq(a3, s_monBssid)) trackCli(a3, a2, rssi);
+    }
+}
+
+static void onRx(void* buf, wifi_promiscuous_pkt_type_t type) {
+    if (!s_run || s_busy) return;
+    const wifi_promiscuous_pkt_t* pkt = (const wifi_promiscuous_pkt_t*)buf;
+    if (!pkt || !pkt->payload) return;
+    s_pktN++;
+    uint8_t ch = pkt->rx_ctrl.channel;
+    if (ch >= 1 && ch <= 13) s_chHit[ch]++;
+    const uint8_t* p = pkt->payload;
+    uint16_t len = pkt->rx_ctrl.sig_len;
+    int8_t rssi = pkt->rx_ctrl.rssi;
+    if (type == WIFI_PKT_DATA) {
+        onData(p, len, rssi);
+        return;
+    }
+    if (type != WIFI_PKT_MGMT || len < 36) return;
+    uint8_t ft = p[0];
+    if (ft != 0x80 && ft != 0x50) return;
+    const uint8_t* bssid = p + 16;
+    char ssid[33] = {0};
+    uint8_t ds = 0;
+    uint16_t o = 36;
+    while (o + 2 < len) {
+        uint8_t t = p[o], n = p[o + 1];
+        if (o + 2 + n > len) break;
+        if (t == 0 && n <= 32) {
+            memcpy(ssid, p + o + 2, n);
+            ssid[n] = 0;
+        } else if (t == 3 && n == 1) {
+            ds = p[o + 2];
+        }
+        o = (uint16_t)(o + 2 + n);
+    }
+    Auth auth;
+    bool pmf;
+    parseAuth(p, len, auth, pmf);
+    onBeacon(bssid, ch, ds, rssi, ssid, auth, pmf, ft == 0x50);
+}
+
+static void radioOn() {
+    WiFi.persistent(false);
+    WiFi.mode(WIFI_AP_STA);
+    WiFi.setSleep(false);
+    if (Config::radio().randomMac) WSLBypasser::randomizeMAC();
+    WiFi.softAP("0N3SPEC", "onelpig123", 6, 1, 4);
+    delay(80);
+    WiFi.softAPmacAddress(s_apMac);
+    wifi_promiscuous_filter_t filt{};
+    filt.filter_mask = WIFI_PROMIS_FILTER_MASK_MGMT | WIFI_PROMIS_FILTER_MASK_DATA;
+    esp_wifi_set_promiscuous_filter(&filt);
+    esp_wifi_set_promiscuous_rx_cb(&onRx);
+    esp_wifi_set_promiscuous(true);
+    esp_wifi_set_channel(6, WIFI_SECOND_CHAN_NONE);
+    s_ch = 6;
+}
+
+static void radioOff() {
+    esp_wifi_set_promiscuous(false);
+    esp_wifi_set_promiscuous_rx_cb(nullptr);
+    WiFi.softAPdisconnect(true);
+    WiFi.disconnect(true, false);
+    WiFi.mode(WIFI_OFF);
+}
+
+static void hopTick() {
+    if (s_phase != SWEEP) return;
+    uint32_t now = millis();
+    if (now - s_lastHop < HOP_MS) return;
+    s_lastHop = now;
+    // Keep the radio hopping only across the channels currently in view.
+    for (uint8_t k = 0; k < HOP_N; k++) {
+        s_hopI = (uint8_t)((s_hopI + 1) % HOP_N);
+        uint8_t cc = HOP[s_hopI];
+        if (chVisible(cc)) { s_ch = cc; break; }
+    }
+    esp_wifi_set_channel(s_ch, WIFI_SECOND_CHAN_NONE);
+}
+
+// Hold [,] / [/] to slide the band. Uses raw key state (not the one-shot
+// latch) so it repeats while held вЂ” that's what makes it feel like a pan.
+static uint32_t s_viewT0 = 0;
+static void viewTick() {
+    if (s_phase != SWEEP) return;
+    if (s_width >= ZOOMS[0]) {  // full band on screen: nothing to pan
+        s_viewT0 = 0;
+        return;
+    }
+    bool left = Keys.isKeyPressed(',');
+    bool right = Keys.isKeyPressed('/');
+    left = left || Keys.isKeyPressed('<');
+    right = right || Keys.isKeyPressed('>');
+    if (!left && !right) {
+        s_viewT0 = 0;
+        return;
+    }
+    uint32_t now = millis();
+    if (s_viewT0 && now - s_viewT0 < 90) return;
+    s_viewT0 = now;
+    if (left) panView(-1);
+    else panView(+1);
+}
+
+static void prune() {
+    uint32_t now = millis();
+    if (now - s_lastPrune < 800) return;
+    s_lastPrune = now;
+    s_busy = true;
+    for (int i = (int)s_nNet - 1; i >= 0; i--) {
+        if (netHeld(i)) continue;
+        if (now - s_net[i].lastSeen > STALE_NET) {
+            s_net[i] = s_net[s_nNet - 1];
+            s_nNet--;
+        }
+    }
+    syncSel();
+    if (s_phase == LOCK) {
+        int idx = findNet(s_monBssid);
+        if (idx >= 0) {
+            Net& n = s_net[idx];
+            for (int i = (int)n.nCli - 1; i >= 0; i--) {
+                if (now - n.cli[i].lastSeen > STALE_CLI) {
+                    n.cli[i] = n.cli[n.nCli - 1];
+                    n.nCli--;
+                }
+            }
+            if (s_cliSel >= n.nCli) s_cliSel = n.nCli ? (int8_t)(n.nCli - 1) : 0;
+        }
+    }
+    s_busy = false;
+}
+
+static void enterLock() {
+    if (s_sel < 0 || s_sel >= s_nNet) return;
+    s_busy = true;
+    memcpy(s_monBssid, s_net[s_sel].bssid, 6);
+    s_monCh = s_net[s_sel].ch;
+    setSel(s_sel);
+    s_net[s_sel].nCli = 0;
+    s_cliSel = 0;
+    s_cliScroll = 0;
+    s_reveal = false;
+    s_phase = LOCK;
+    esp_wifi_set_channel(s_monCh, WIFI_SECOND_CHAN_NONE);
+    s_ch = s_monCh;
+    s_busy = false;
+    SFX::play(SFX::CHANNEL_LOCK);
+    Avatar::setState(AvatarState::HUNTING);
+    Display::showToast(s_net[s_sel].ssid[0] ? s_net[s_sel].ssid : "HIDDEN");
+}
+
+static void exitLock() {
+    s_busy = true;
+    s_reveal = false;
+    s_phase = SWEEP;
+    memset(s_monBssid, 0, 6);
+    s_busy = false;
+}
+
+static void enterHunt() {
+    if (s_phase == SWEEP) {
+        if (s_sel < 0 || s_sel >= s_nNet) {
+            Display::showToast("PICK A NET");
+            return;
+        }
+        memcpy(s_monBssid, s_net[s_sel].bssid, 6);
+        s_monCh = s_net[s_sel].ch;
+        setSel(s_sel);
+    }
+    int idx = findNet(s_monBssid);
+    if (idx < 0) {
+        Display::showToast("NO TARGET");
+        return;
+    }
+    const Net& n = s_net[idx];
+    s_reveal = false;
+    radioOff();
+    Cap::startPinned(n.ch, n.bssid, n.ssid);
+    applyHuntDepth(); // after start so Cap picks spectrum depth, not stale RADIO
+    s_phase = HUNT;
+    SFX::play(SFX::CHANNEL_LOCK);
+    char toast[28];
+    snprintf(toast, sizeof(toast), "%s %s",
+             n.ssid[0] ? n.ssid : "HUNT", huntDepthName(s_huntDepth));
+    Display::showToast(toast);
+}
+
+static void exitHunt() {
+    if (Cap::isRunning()) Cap::stop();
+    s_phase = LOCK;
+    radioOn();
+    esp_wifi_set_channel(s_monCh, WIFI_SECOND_CHAN_NONE);
+    s_ch = s_monCh;
+}
+
+static void kick(int ci) {
+    int idx = findNet(s_monBssid);
+    if (idx < 0) return;
+    Net& n = s_net[idx];
+    if (n.pmf) {
+        Display::showToast("PMF вЂ” WON'T DROP");
+        return;
+    }
+    uint8_t bc[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+    const uint8_t* sta = (ci >= 0 && ci < n.nCli) ? n.cli[ci].mac : bc;
+    s_busy = true;
+    for (int i = 0; i < 6; i++) {
+        WSLBypasser::sendDeauthFrame(n.bssid, n.ch, sta, 7);
+        delay(2);
+        WSLBypasser::sendDisassocFrame(n.bssid, n.ch, sta, 8);
+        delay(2);
+        if (ci >= 0 && ci < n.nCli) {
+            WSLBypasser::sendDeauthFrame(sta, n.ch, n.bssid, 8);
+            delay(2);
+        }
+    }
+    s_busy = false;
+    SFX::play(SFX::DEAUTH);
+    Avatar::waveRipple(WaveMode::OUTGOING, 4);
+    if (ci >= 0 && ci < n.nCli) {
+        char m[24];
+        snprintf(m, sizeof(m), "KICK %02X:%02X:%02X", sta[3], sta[4], sta[5]);
+        Display::showToast(m);
+    } else {
+        Display::showToast("KICK ALL");
+    }
+}
+
+static void revealTick() {
+    if (!s_reveal) return;
+    uint32_t now = millis();
+    if (now - s_revealT0 > 8000) {
+        s_reveal = false;
+        int idx = findNet(s_monBssid);
+        char m[24];
+        snprintf(m, sizeof(m), "FOUND %u", idx >= 0 ? s_net[idx].nCli : 0);
+        Display::showToast(m);
+        return;
+    }
+    if (now - s_revealBurst < 420) return;
+    s_revealBurst = now;
+    int idx = findNet(s_monBssid);
+    if (idx < 0 || s_net[idx].pmf) return;
+    uint8_t bc[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+    WSLBypasser::sendDeauthFrame(s_net[idx].bssid, s_net[idx].ch, bc, 7);
+}
+
+static void updateBuf() {
+    for (int i = 0; i < W; i++)
+        s_col[i] = (int8_t)(NOISE + (int)(noise7() % 4) - 2);
+    float leftF = s_center - s_width * 0.5f;
+    float px = s_width / (float)W;
+    for (uint8_t i = 0; i < s_nNet; i++) {
+        if (!passFilt(s_net[i])) continue;
+        float c = s_net[i].freq;
+        for (int x = 0; x < W; x++) {
+            float f = leftF + (float)x * px;
+            float amp = sincAmp(f - c);
+            if (amp < 0.05f) continue;
+            int8_t v = (int8_t)(NOISE + (int)((s_net[i].rssi - NOISE) * amp));
+            if (v > s_col[x]) s_col[x] = v;
+        }
+    }
+    for (int i = 0; i < W; i++) {
+        s_persist[i] = (int8_t)((s_persist[i] * 3 + s_col[i]) / 4);
+    }
+    uint32_t now = millis();
+    if (now - s_wfT0 >= 100) {
+        s_wfT0 = now;
+        for (int x = 0; x < W; x++) {
+            int in = (int)(s_persist[x] - RSSI_MIN) * 255 / (RSSI_MAX - RSSI_MIN);
+            if (in < 0) in = 0;
+            if (in > 255) in = 255;
+            s_wf[(size_t)s_wfRow * W + x] = (uint8_t)in;
+        }
+        s_wfRow = (uint8_t)((s_wfRow + 1) % WF_ROWS);
+    }
+    if (now - s_rateT0 >= 1000) {
+        s_rateT0 = now;
+        for (uint8_t c = 1; c <= 13; c++) {
+            uint32_t hit = s_chHit[c];
+            s_chRate[c] = (uint16_t)(hit - s_chSnap[c]);
+            s_chSnap[c] = hit;
+        }
+        s_pps = s_pktN;
+        s_pktN = 0;
+    }
+}
+
+static void upName(const char* in, char* out, size_t n) {
+    size_t i = 0;
+    if (!in || !in[0]) {
+        strncpy(out, "<HIDDEN>", n);
+        out[n - 1] = 0;
+        return;
+    }
+    while (in[i] && i + 1 < n) {
+        char ch = in[i];
+        if (ch >= 'a' && ch <= 'z') ch = (char)(ch - 32);
+        out[i++] = ch;
+    }
+    out[i] = 0;
+}
+
+static void formatMetricCount(uint32_t value, char* out, size_t size) {
+    if (value < 10000) {
+        snprintf(out, size, "%lu", (unsigned long)value);
+    } else if (value < 1000000) {
+        snprintf(out, size, "%luk", (unsigned long)(value / 1000));
+    } else if (value < 10000000) {
+        snprintf(out, size, "%lu.%luM",
+                 (unsigned long)(value / 1000000),
+                 (unsigned long)((value / 100000) % 10));
+    } else if (value < 1000000000) {
+        snprintf(out, size, "%luM", (unsigned long)(value / 1000000));
+    } else {
+        snprintf(out, size, "%luG+", (unsigned long)(value / 1000000000));
+    }
+}
+
+static void drawSeasonalNoise(M5Canvas& c, uint16_t bg,
+                              const SpectrumPalette& palette) {
+    const uint32_t frame = millis() / 110u;
+    for (int y = 3; y < MAIN_H; y += 5) {
+        for (int x = 3; x < DISPLAY_W; x += 5) {
+            uint16_t noise = (uint16_t)(x * 251u + y * 37u + frame * 97u);
+            noise ^= (uint16_t)(noise << 7);
+            noise ^= (uint16_t)(noise >> 9);
+            noise ^= (uint16_t)(noise << 8);
+            if ((noise & 7u) > 1u) continue;
+            c.drawPixel(x, y, blend565(palette.signal, bg, 102));
+        }
+    }
+
+    const int sweepX = (int)((millis() / 70u) % DISPLAY_W);
+    c.drawFastVLine(sweepX, 0, MAIN_H,
+                    blend565(palette.accent, bg, 42));
+    if (sweepX > 0)
+        c.drawFastVLine(sweepX - 1, 0, MAIN_H,
+                        blend565(palette.accent, bg, 18));
+}
+
+static void drawSweep(M5Canvas& c, uint16_t fg, uint16_t bg) {
+    c.setTextWrap(false);
+    const SpectrumPalette palette = seasonPalette();
+    uint8_t tot = 0;
+    for (uint8_t i = 0; i < s_nNet; i++) if (passFilt(s_net[i])) tot++;
+    const char* fn = "ALL";
+    if (s_filt == F_VULN) fn = "VULN";
+    else if (s_filt == F_SOFT) fn = "SOFT";
+    else if (s_filt == F_HIDDEN) fn = "HID";
+
+    c.setTextSize(1);
+    c.setTextDatum(top_left);
+    c.fillRoundRect(2, INFO_Y, 165, 9, 2, UiStyle::PANEL);
+    c.setTextColor(UiStyle::GOLD);
+    c.drawString("F FILTER", 5, INFO_Y + 1);
+    c.setTextColor(fg);
+    char filterInfo[24];
+    snprintf(filterInfo, sizeof(filterInfo), "%s %uAP %u/s",
+             fn, (unsigned)tot, (unsigned)s_pps);
+    c.drawString(filterInfo, 63, INFO_Y + 1);
+
+    char zoomInfo[24];
+    unsigned zoom = (unsigned)(WIDTH0 / s_width + 0.5f);
+    snprintf(zoomInfo, sizeof(zoomInfo), "%uX  %.0fMHz", zoom, s_width);
+    c.fillRoundRect(170, INFO_Y, 68, 9, 2, UiStyle::PANEL);
+    c.setTextDatum(top_right);
+    c.setTextColor(UiStyle::CYAN);
+    c.drawString(zoomInfo, 234, INFO_Y + 1);
+
+    const uint16_t grid = (bg == UiStyle::BG) ? UiStyle::PANEL : UiStyle::DIM;
+    c.drawRect(L, TOP, W, BOT - TOP + 1, grid);
+    for (int y = TOP + 8; y < BOT; y += 8)
+        c.drawFastHLine(L + 1, y, W - 2, grid);
+
+    const uint16_t noiseColor = blend565(palette.signal, bg, 176);
+    for (int x = 0; x < W; x += 2) {
+        const int height = 1 + noise7();
+        c.drawFastVLine(L + x, BOT - height, height, noiseColor);
+    }
+
+    if (s_sel >= 0 && s_sel < s_nNet && passFilt(s_net[s_sel])) {
+        const Net& selected = s_net[s_sel];
+        int height = BOT - rssiToY(selected.rssi);
+        int left = freqToX(selected.freq - 22.0f);
+        int right = freqToX(selected.freq + 22.0f);
+        if (left < L) left = L;
+        if (right > R) right = R;
+        const uint16_t selectedFill = blend565(palette.accent, bg, 160);
+        uint16_t noise = (uint16_t)(millis() / 38u);
+        for (int x = left; x <= right; x++) {
+            float freq = s_center - s_width * 0.5f +
+                         (float)(x - L) * s_width / (float)W;
+            float amp = sincAmp(freq - selected.freq);
+            int top = BOT - (int)(height * amp);
+            if (top < TOP) top = TOP;
+            if (top > BOT) top = BOT;
+            if (top >= BOT) continue;
+
+            uint16_t hash = (uint16_t)(x * 251u + (uint16_t)(top * 37u));
+            hash ^= (uint16_t)(hash << 7);
+            hash ^= (uint16_t)(hash >> 9);
+            hash ^= noise;
+            for (int y = top; y < BOT; y++) {
+                const uint16_t dash = (uint16_t)(hash + y * 13u);
+                if ((dash & 3u) == 0)
+                    c.drawPixel(x, y, selectedFill);
+            }
+            c.drawPixel(x, top, palette.accent);
+            if (x > left && (hash & 8u))
+                c.drawPixel(x - 1, top, palette.accent);
+        }
+    }
+
+    int previousY = rssiToY(s_persist[0]);
+    for (int x = 1; x < W; x++) {
+        int y = rssiToY(s_persist[x]);
+        c.drawLine(L + x - 1, previousY, L + x, y, palette.signal);
+        previousY = y;
+    }
+
+    c.drawFastHLine(L, WF_TOP - 1, W, blend565(palette.signal, bg, 112));
+    for (int row = 0; row < WF_ROWS; row++) {
+        int br = (s_wfRow + row) % WF_ROWS;
+        int y = WF_TOP + row;
+        for (int x = 0; x < W; x++) {
+            uint8_t in = s_wf[(size_t)br * W + x];
+            if (in <= 20) continue;
+
+            const bool pixel = in > 200 || (in > 150 && (x & 1) == 0) ||
+                               (in > 100 && x % 3 == 0) ||
+                               (in > 50 && x % 4 == 0) ||
+                               (x % 6 == 0);
+            if (!pixel) continue;
+
+            const uint16_t color = in > 200
+                ? blend565(palette.accent, bg, 176)
+                : in > 100
+                    ? blend565(palette.signal, bg, 160)
+                    : blend565(palette.signal, bg, 112);
+            c.drawPixel(L + x, y, color);
+        }
+    }
+
+    c.setTextDatum(top_center);
+    c.setTextColor(fg);
+    int selectedChannel = (s_sel >= 0 && s_sel < s_nNet &&
+                           passFilt(s_net[s_sel])) ? s_net[s_sel].ch : 0;
+    for (uint8_t ch = 1; ch <= 13; ch++) {
+        int x = freqToX(chToFreq(ch));
+        if (x < L || x > R) continue;
+        bool selected = (ch == selectedChannel);
+        char lb[4];
+        snprintf(lb, sizeof(lb), "%u", ch);
+        c.setTextColor(selected ? palette.accent : fg);
+        c.drawString(lb, x, CH_Y);
+        c.setTextColor(fg);
+    }
+
+    const bool hasSelection = s_sel >= 0 && s_sel < s_nNet &&
+                              passFilt(s_net[s_sel]);
+    const int center = hasSelection ? s_sel : nextFiltered(-1, 1);
+    if (center < 0) {
+        c.fillRoundRect(2, LIST_Y - 1, DISPLAY_W - 4, 25, 3, UiStyle::PANEL);
+        c.setTextDatum(top_left);
+        c.setTextColor(UiStyle::DIM);
+        c.drawString("SCANNING FOR NETWORKS...", 7, LIST_Y + 7);
+        return;
+    }
+
+    const int prev = nextFiltered(center, -1);
+    const int next = nextFiltered(center, 1);
+    const int rows[3] = {prev, center, next};
+    const uint16_t rowY[3] = {77, 86, 95};
+    c.setTextDatum(top_left);
+    for (uint8_t slot = 0; slot < 3; slot++) {
+        const int idx = rows[slot];
+        if (idx < 0 || (slot != 1 && idx == center) ||
+            (slot == 2 && idx == prev)) continue;
+        const Net& net = s_net[idx];
+        const bool selected = slot == 1;
+        const uint16_t y = rowY[slot];
+        const uint16_t rowColor = selected ? UiStyle::PINK : UiStyle::PANEL;
+        c.fillRoundRect(2, y - 1, DISPLAY_W - 4, 9, 2, rowColor);
+
+        char name[15];
+        upName(net.ssid, name, sizeof(name));
+        char line[40];
+        snprintf(line, sizeof(line), "%u %s  CH%u %-4s %+ddB",
+                 (unsigned)(slot + 1), name, net.ch, authStr(net.auth), net.rssi);
+        c.setTextColor(selected ? bg : fg);
+        c.drawString(line, 6, y);
+    }
+}
+
+static void drawLock(M5Canvas& c, uint16_t fg, uint16_t bg) {
+    c.setTextWrap(false);
+    int idx = findNet(s_monBssid);
+    c.setTextSize(1);
+    c.setTextDatum(top_left);
+    if (idx < 0) {
+        c.setTextColor(UiStyle::GOLD);
+        c.drawString("NETWORK LOST", 4, 8);
+        return;
+    }
+    const Net& n = s_net[idx];
+    char name[16];
+    upName(n.ssid, name, sizeof(name));
+    char head[40];
+    snprintf(head, sizeof(head), "LOCK  %s", name);
+    c.setTextColor(UiStyle::GOLD);
+    c.drawString(head, 4, 2);
+    char meta[44];
+    snprintf(meta, sizeof(meta), "CH%u %s  HS %s  %u STA%s",
+             n.ch, authStr(n.auth), huntDepthName(s_huntDepth), n.nCli,
+             n.pmf ? " PMF" : "");
+    c.setTextColor(fg);
+    c.drawString(meta, 4, 14);
+
+    if (n.nCli == 0) {
+        c.setTextColor(UiStyle::DIM);
+        c.drawString("no clients yet", 4, 36);
+    } else {
+        const int lh = 12;
+        uint8_t vis = 4;
+        if (s_cliSel < s_cliScroll) s_cliScroll = (uint8_t)s_cliSel;
+        if (s_cliSel >= s_cliScroll + vis)
+            s_cliScroll = (uint8_t)(s_cliSel - vis + 1);
+        for (uint8_t i = 0; i < vis; i++) {
+            int ci = s_cliScroll + i;
+            if (ci >= n.nCli) break;
+            const Client& cl = n.cli[ci];
+            int y = 28 + i * lh;
+            if (ci == s_cliSel) {
+                c.fillRect(2, y - 1, 236, lh, UiStyle::PINK);
+                c.setTextColor(bg);
+            } else {
+                c.setTextColor(fg);
+            }
+            char line[36];
+            snprintf(line, sizeof(line), "%u  %02X:%02X:%02X  %+ddB  %u",
+                     (unsigned)(ci + 1),
+                     cl.mac[3], cl.mac[4], cl.mac[5],
+                     cl.rssi, (unsigned)cl.pkts);
+            c.drawString(line, 6, y);
+        }
+    }
+
+    if (s_reveal) {
+        c.setTextColor(UiStyle::GOLD);
+        c.drawString("WAKING CLIENTS...", 4, 80);
+    }
+}
+
+static void drawHunt(M5Canvas& c, uint16_t fg, uint16_t bg) {
+    c.setTextWrap(false);
+    const SpectrumPalette palette = seasonPalette();
+    int idx = findNet(s_monBssid);
+    const Cap::Counters& cap = Cap::counters();
+    c.setTextSize(1);
+    c.setTextDatum(top_left);
+
+    char name[16];
+    upName((idx >= 0 && s_net[idx].ssid[0]) ? s_net[idx].ssid : "HIDDEN", name, sizeof(name));
+    char head[36];
+    snprintf(head, sizeof(head), "HUNT  %s", name);
+    c.setTextColor(UiStyle::GOLD);
+    c.drawString(head, 4, 2);
+
+    char line[40];
+    snprintf(line, sizeof(line), "CH%u  %s  %s",
+             s_monCh,
+             idx >= 0 ? authStr(s_net[idx].auth) : "?",
+             cap.methodTag[0] ? cap.methodTag : "OURS");
+    c.setTextColor(fg);
+    c.drawString(line, 4, 14);
+
+    static const char* metricLabels[] = { "KICK", "EAPOL", "WRITE", "NEW" };
+    const uint32_t metricValues[] = {
+        cap.framesDeauth, cap.framesEapol, cap.framesWritten, cap.filesOpened
+    };
+    static const int metricX[] = { 3, 59, 121, 183 };
+    c.fillRoundRect(2, 28, DISPLAY_W - 4, 11, 2, UiStyle::PANEL);
+    for (uint8_t i = 0; i < 4; ++i) {
+        char count[8];
+        char label[8];
+        snprintf(label, sizeof(label), "%s:", metricLabels[i]);
+        formatMetricCount(metricValues[i], count, sizeof(count));
+        c.setTextColor(UiStyle::GOLD);
+        c.drawString(label, metricX[i], 30);
+        c.setTextColor(fg);
+        c.drawString(count, metricX[i] + (int)strlen(label) * 6, 30);
+        if (i < 3)
+            c.drawFastVLine(metricX[i + 1] - 1, 30, 7, UiStyle::DIM);
+    }
+
+    const Hc22000::HandshakeProgress progress =
+        Hc22000::handshakeProgress(s_monBssid, s_huntDepth);
+    const uint8_t mask = progress.messages;
+    const uint8_t reqMask = (s_huntDepth == 0) ? 0x03 : (s_huntDepth == 1 ? 0x07 : 0x0F);
+
+    const int panelX = 4;
+    const int panelY = 48;
+    const int panelW = 228;
+    const int panelH = 48;
+    c.setTextSize(1);
+    c.setTextDatum(top_left);
+    c.fillRoundRect(panelX, panelY, panelW, panelH, 3, UiStyle::PANEL);
+    c.drawRoundRect(panelX, panelY, panelW, panelH, 3, UiStyle::PINK);
+
+    const int chipW = 70;
+    const int chipGap = 4;
+    for (uint8_t d = 0; d < 3; ++d) {
+        const bool selected = (s_huntDepth == d);
+        const int x = panelX + 6 + d * (chipW + chipGap);
+        const uint16_t fill = selected ? UiStyle::GOLD : 0x2A2A;
+        const uint16_t border = selected ? UiStyle::PINK : 0x4208;
+        const uint16_t text = selected ? 0x0000 : UiStyle::TEXT;
+        c.fillRoundRect(x, panelY + 13, chipW, 9, 2, fill);
+        c.drawRoundRect(x, panelY + 13, chipW, 9, 2, border);
+        c.setTextColor(text);
+        c.drawString((d == 0) ? "PAIR" : ((d == 1) ? "+M3" : "FULL"), x + 16, panelY + 14);
+    }
+
+    const int boxW = 24;
+    const int boxGap = 4;
+    const char* labels[4] = { "M1", "M2", "M3", "M4" };
+    const uint8_t bits[4] = { 0x01, 0x02, 0x04, 0x08 };
+    for (uint8_t i = 0; i < 4; ++i) {
+        const bool seen = (mask & bits[i]) != 0;
+        const bool required = (reqMask & bits[i]) != 0;
+        const int x = panelX + 6 + i * (boxW + boxGap);
+        const int y = panelY + 25;
+        uint16_t fill = seen ? (required ? UiStyle::GOLD : UiStyle::CYAN) : 0x3186;
+        uint16_t border = required ? UiStyle::PINK : 0x4208;
+        if (!seen && required) fill = 0x5AEB;
+        c.fillRoundRect(x, y, boxW, 9, 2, fill);
+        c.drawRoundRect(x, y, boxW, 9, 2, border);
+        c.setTextColor(seen ? 0x0000 : UiStyle::TEXT);
+        c.drawString(labels[i], x + 7, y + 1);
+    }
+
+    char statusLine[28];
+    if (progress.ready) {
+        snprintf(statusLine, sizeof(statusLine), "%s READY", huntDepthName(s_huntDepth));
+    } else if (progress.pmkid) {
+        snprintf(statusLine, sizeof(statusLine), "PMKID");
+    } else {
+        snprintf(statusLine, sizeof(statusLine), "%s WAIT", huntDepthName(s_huntDepth));
+    }
+    c.setTextColor(progress.ready || progress.pmkid ? UiStyle::GOLD : UiStyle::DIM);
+    c.drawString(statusLine, panelX + 6, panelY + 1);
+
+    if (cap.lastHsSsid[0]) {
+        char got[28];
+        snprintf(got, sizeof(got), "GOT %.7s", cap.lastHsSsid);
+        c.setTextColor(UiStyle::GOLD);
+        c.drawString(got, panelX + panelW - 74, panelY + 1);
+    }
+
+    c.setTextColor(UiStyle::CYAN);
+    const char* st = "listening";
+    if (Cap::isLocked()) st = "hold after M1";
+    else if (cap.framesDeauth) st = "kicking + sniff";
+    c.drawString(st, panelX + 6, panelY + 37);
+    if (progress.hasStation) {
+        char station[20];
+        snprintf(station, sizeof(station), "STA %02X:%02X:%02X",
+                 progress.station[3], progress.station[4], progress.station[5]);
+        c.setTextColor(fg);
+        c.drawString(station, panelX + panelW - 82, panelY + 37);
+    }
+}
+
+void start() {
+    if (s_run) return;
+    if (!allocateRuntimeBuffers()) {
+        Display::showToast("SPECTRUM LOW HEAP");
+        Serial.println("[SPEC] runtime buffers unavailable");
+        return;
+    }
+    if (Cap::isRunning()) Cap::stop();
+    Avatar::suspendScene();
+    Avatar::setState(AvatarState::HUNTING);
+    memset(s_net, 0, sizeof(Net) * MAX_NETS);
+    s_nNet = 0;
+    s_sel = -1;
+    s_hasSel = false;
+    s_phase = SWEEP;
+    s_filt = F_ALL;
+    s_center = CENTER0;
+    s_width = WIDTH0;
+    s_zoomI = 0;
+    s_reveal = false;
+    s_busy = false;
+    memset(s_col, RSSI_MIN, sizeof(s_col));
+    memset(s_persist, RSSI_MIN, sizeof(s_persist));
+    memset(s_wf, 0, (size_t)WF_ROWS * W);
+    memset(s_chHit, 0, sizeof(s_chHit));
+    memset(s_chSnap, 0, sizeof(s_chSnap));
+    memset(s_chRate, 0, sizeof(s_chRate));
+    s_pktN = 0;
+    s_pps = 0;
+    radioOn();
+    s_run = true;
+    s_keyWas = true;
+    s_lastHop = millis();
+    s_ppsT0 = millis();
+    s_huntDepth = Config::radio().hsDepth;
+    if (s_huntDepth > 2) s_huntDepth = 2;
+    Serial.println("[SPEC] sweep 2.4");
+}
+
+void stop() {
+    if (!s_run) {
+        freeRuntimeBuffers();
+        return;
+    }
+    s_run = false;
+    s_busy = true;
+    s_reveal = false;
+    if (Cap::isRunning()) Cap::stop();
+    else radioOff();
+    Avatar::resumeScene();
+    Avatar::setState(AvatarState::NEUTRAL);
+    s_nNet = 0;
+    s_phase = SWEEP;
+    s_busy = false;
+    freeRuntimeBuffers();
+    Serial.println("[SPEC] stop");
+}
+
+bool isRunning() { return s_run; }
+
+void getStatusLine(char* out, size_t n) {
+    if (!out || !n) return;
+    bool keys = (millis() % 7500u) >= 5000u;
+    if (s_phase == HUNT) {
+        if (keys) {
+            snprintf(out, n, "D DEPTH  ESC STOP");
+        } else {
+            const Hc22000::HandshakeProgress progress =
+                Hc22000::handshakeProgress(s_monBssid, s_huntDepth);
+            if (progress.ready)
+                snprintf(out, n, "HUNT %s  DONE", huntDepthName(s_huntDepth));
+            else if (progress.pmkid)
+                snprintf(out, n, "HUNT PMKID");
+            else
+                snprintf(out, n, "HUNT %s  wait", huntDepthName(s_huntDepth));
+        }
+    } else if (s_phase == LOCK) {
+        if (keys) {
+            snprintf(out, n, "ENT HUNT  D %s  SPC  ESC", huntDepthName(s_huntDepth));
+        } else {
+            int idx = findNet(s_monBssid);
+            snprintf(out, n, "LOCK CH%u  %u STA",
+                     s_monCh, idx >= 0 ? s_net[idx].nCli : 0);
+        }
+    } else {
+        snprintf(out, n, "^/v AP  </> MOVE  -/= ZOOM  ENT LOCK  A HUNT");
+    }
+}
+
+static void handleSweep() {
+    if (Keys.isKeyPressed(';')) {
+        int n = nextSel(-1);
+        if (n >= 0) {
+            setSel(n);
+            ensureVisible(s_net[n].freq);
+            SFX::play(SFX::MENU_CLICK);
+        }
+    }
+    if (Keys.isKeyPressed('.')) {
+        int n = nextSel(+1);
+        if (n >= 0) {
+            setSel(n);
+            ensureVisible(s_net[n].freq);
+            SFX::play(SFX::MENU_CLICK);
+        }
+    }
+    if (Keys.isKeyPressed('-')) zoomView(-1);
+    if (Keys.isKeyPressed('=')) zoomView(+1);
+    if (Keys.isKeyPressed('0')) resetView();
+    if (Keys.isKeyPressed('f') || Keys.isKeyPressed('F')) {
+        s_filt = (Filt)((s_filt + 1) & 3);
+        if (s_sel < 0 || s_sel >= s_nNet || !passFilt(s_net[s_sel]))
+            setSel(nextSel(+1));
+        SFX::play(SFX::MENU_CLICK);
+    }
+    if (Keys.isKeyPressed('a') || Keys.isKeyPressed('A')) {
+        enterHunt();
+        return;
+    }
+    if (Keys.keysState().enter) enterLock();
+}
+
+static void handleLock() {
+    if (s_reveal) {
+        s_reveal = false;
+        return;
+    }
+    int idx = findNet(s_monBssid);
+    uint8_t nc = (idx >= 0) ? s_net[idx].nCli : 0;
+    if (Keys.isKeyPressed(';') && nc) {
+        if (s_cliSel > 0) s_cliSel--;
+        SFX::play(SFX::MENU_CLICK);
+    }
+    if (Keys.isKeyPressed('.') && nc) {
+        if (s_cliSel + 1 < nc) s_cliSel++;
+        SFX::play(SFX::MENU_CLICK);
+    }
+    if (Keys.isKeyPressed('w') || Keys.isKeyPressed('W')) {
+        if (idx >= 0 && s_net[idx].pmf) {
+            Display::showToast("PMF вЂ” DEAF");
+            return;
+        }
+        s_reveal = true;
+        s_revealT0 = millis();
+        s_revealBurst = 0;
+        SFX::play(SFX::REVEAL_START);
+        return;
+    }
+    if (Keys.keysState().enter ||
+        Keys.isKeyPressed('a') ||
+        Keys.isKeyPressed('A')) {
+        enterHunt();
+        return;
+    }
+    if (Keys.isKeyPressed('d') ||
+        Keys.isKeyPressed('D')) {
+        cycleHuntDepth();
+        return;
+    }
+    if (Keys.isKeyPressed(' ')) kick(nc ? s_cliSel : -1);
+}
+
+static void handleHunt() {
+    if (Keys.isKeyPressed('d') ||
+        Keys.isKeyPressed('D')) {
+        cycleHuntDepth();
+        return;
+    }
+    if (Keys.isKeyPressed(' ')) {
+        // Cap::loop() already kicks s_monBssid вЂ” don't double-fire.
+        Display::showToast("ALREADY KICKING");
+    }
+}
+
+void update() {
+    if (!s_run) return;
+
+    // Same as PigPass: open window в†’ scene off; minimize в†’ farm lives.
+    if (App::windowHidden()) {
+        if (Avatar::isSceneSuspended()) Avatar::resumeScene();
+    } else {
+        if (!Avatar::isSceneSuspended()) Avatar::suspendScene();
+    }
+
+    if (s_phase == HUNT) {
+        Cap::loop();
+    } else {
+        viewTick();
+        hopTick();
+        prune();
+        updateBuf();
+        revealTick();
+    }
+    if (s_beepCli) {
+        s_beepCli = false;
+        SFX::play(SFX::CLIENT_FOUND);
+    }
+    if (App::windowHidden()) return;
+    if (!keyNewPress(s_keyWas)) return;
+    if (keyEsc()) {
+        if (s_phase == HUNT) {
+            exitHunt();
+            return;
+        }
+        if (s_phase == LOCK) {
+            exitLock();
+            return;
+        }
+        stop();
+        return;
+    }
+    if (s_phase == HUNT) handleHunt();
+    else if (s_phase == LOCK) handleLock();
+    else handleSweep();
+}
+
+void draw(M5Canvas& canvas) {
+    syncSel();
+    uint16_t fg = getColorFG();
+    uint16_t bg = getColorBG();
+    canvas.fillSprite(bg);
+    if (s_phase == HUNT) {
+        drawSeasonalNoise(canvas, bg, seasonPalette());
+        drawHunt(canvas, fg, bg);
+    }
+    else if (s_phase == LOCK) {
+        drawSeasonalNoise(canvas, bg, seasonPalette());
+        drawLock(canvas, fg, bg);
+    }
+    else drawSweep(canvas, fg, bg);
+}
+
+}  // namespace SpectrumMode
+
+

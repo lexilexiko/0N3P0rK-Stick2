@@ -1,0 +1,1077 @@
+// cap/hc22000.cpp
+#include "hc22000.h"
+#include "capture_name.h"
+#include "../storage/littlefs_ops.h"
+#include "../core/config.h"
+#include <SD.h>
+#include <string.h>
+#include <strings.h>
+#include <stdio.h>
+#include <ctype.h>
+#include "freertos/FreeRTOS.h"
+#include "freertos/portmacro.h"
+#include <new>
+
+namespace Hc22000 {
+
+static const uint8_t MAX_HS = 24;
+static const uint16_t MAX_EAPOL = 512;
+
+struct Hs {
+    uint8_t bssid[6];
+    uint8_t sta[6];
+    uint8_t essid[32];
+    uint8_t essidLen;
+    uint8_t anonce[32];     // from M1
+    uint8_t anonce3[32];    // from M3 (M2+M3 fallback)
+    uint8_t anonceReplay[8];  // M1's EAPOL key replay counter
+    uint8_t m2Replay[8];      // M2's own EAPOL key replay counter (must equal M1's)
+    uint8_t m3Replay[8];      // M3 must be M1 replay counter + 1
+    uint8_t m4Replay[8];      // M4 must match M3 replay counter
+    uint8_t pmkid[16];
+    uint8_t m2[MAX_EAPOL];
+    uint16_t m2Len;
+    bool used;
+    bool haveEssid;
+    bool haveAnonce;
+    bool haveAnonce3;
+    bool havePmkid;
+    bool haveM2;
+    bool haveM4;      // M4 carries no nonce we need, just note it arrived
+    bool wrotePmkid;
+    bool wroteEapol;
+    uint32_t lastSeenMs;
+    // Set true by feed() (which can run from the WiFi promiscuous IRQ) when
+    // an in-memory slot field changed. Cleared by flushPending() in loop()
+    // after maybeWrite() has had a chance to actually open the SD file.
+    // Without this, maybeWrite() would SD.open()/write()/close() straight
+    // from the ISR on every beacon/EAPOL - guaranteed WDT/panic under load.
+    bool dirty;
+};
+
+static Hs* s_hs = nullptr;
+static portMUX_TYPE s_hsMux = portMUX_INITIALIZER_UNLOCKED;
+
+static bool isZeroMac(const uint8_t* mac) {
+    if (!mac) return true;
+    for (uint8_t i = 0; i < 6; i++) {
+        if (mac[i] != 0) return false;
+    }
+    return true;
+}
+
+static void resetHandshakeForStation(Hs* h, const uint8_t* sta) {
+    if (!h || !sta) return;
+    memset(h->sta, 0, sizeof(h->sta));
+    memset(h->anonce, 0, sizeof(h->anonce));
+    memset(h->anonce3, 0, sizeof(h->anonce3));
+    memset(h->anonceReplay, 0, sizeof(h->anonceReplay));
+    memset(h->m2Replay, 0, sizeof(h->m2Replay));
+    memset(h->m3Replay, 0, sizeof(h->m3Replay));
+    memset(h->m4Replay, 0, sizeof(h->m4Replay));
+    memset(h->pmkid, 0, sizeof(h->pmkid));
+    memset(h->m2, 0, sizeof(h->m2));
+    h->m2Len = 0;
+    h->haveAnonce = false;
+    h->haveAnonce3 = false;
+    h->havePmkid = false;
+    h->haveM2 = false;
+    h->haveM4 = false;
+    memcpy(h->sta, sta, 6);
+}
+
+static bool replayIncremented(const uint8_t* base, const uint8_t* candidate) {
+    if (!base || !candidate) return false;
+    uint8_t expected[8];
+    memcpy(expected, base, sizeof(expected));
+    for (int i = 7; i >= 0; i--) {
+        if (++expected[i] != 0) break;
+    }
+    return memcmp(expected, candidate, sizeof(expected)) == 0;
+}
+
+static bool selectStation(Hs* h, const uint8_t* sta) {
+    if (!h || !sta) return false;
+    if (isZeroMac(h->sta) || memcmp(h->sta, sta, 6) == 0) {
+        memcpy(h->sta, sta, 6);
+        return true;
+    }
+    if (h->wroteEapol || h->wrotePmkid) return false;
+    resetHandshakeForStation(h, sta);
+    return true;
+}
+
+static void hexEnc(const uint8_t* in, size_t n, char* out) {
+    static const char* H = "0123456789abcdef";
+    for (size_t i = 0; i < n; i++) {
+        out[i * 2] = H[in[i] >> 4];
+        out[i * 2 + 1] = H[in[i] & 0x0F];
+    }
+    out[n * 2] = '\0';
+}
+
+static uint32_t s_lastM1Ms = 0;
+
+static void essidOf(const Hs* h, char ssid[33]) {
+    ssid[0] = '\0';
+    if (!h || !h->haveEssid || h->essidLen == 0) return;
+    size_t n = h->essidLen < 32 ? h->essidLen : 32;
+    memcpy(ssid, h->essid, n);
+    ssid[n] = '\0';
+}
+
+static void makePath(const Hs* h, const char* suffix, char* path, size_t pathLen) {
+    char ssid[33];
+    essidOf(h, ssid);
+    char stem[40];
+    CapName::buildStem(ssid, h->bssid, stem, sizeof(stem));
+    snprintf(path, pathLen, "%s/%s%s", Storage::DIR_HS, stem, suffix);
+}
+
+static Hs* oldestReusableSlot() {
+    Hs* oldestUnwritten = nullptr;
+    Hs* oldestWritten = nullptr;
+    for (uint8_t i = 0; i < MAX_HS; i++) {
+        Hs* h = &s_hs[i];
+        if (!h->used) continue;
+        if (h->wroteEapol || h->wrotePmkid) {
+            if (!oldestWritten || h->lastSeenMs < oldestWritten->lastSeenMs)
+                oldestWritten = h;
+        } else if (!oldestUnwritten || h->lastSeenMs < oldestUnwritten->lastSeenMs) {
+            oldestUnwritten = h;
+        }
+    }
+    // Saved hash files remain on SD, so a completed in-memory entry can be
+    // recycled once all earlier incomplete entries have been considered.
+    return oldestUnwritten ? oldestUnwritten : oldestWritten;
+}
+
+static Hs* slotFor(const uint8_t* bssid) {
+    for (uint8_t i = 0; i < MAX_HS; i++) {
+        if (s_hs[i].used && memcmp(s_hs[i].bssid, bssid, 6) == 0) return &s_hs[i];
+    }
+    for (uint8_t i = 0; i < MAX_HS; i++) {
+        if (!s_hs[i].used) {
+            memset(&s_hs[i], 0, sizeof(Hs));
+            memcpy(s_hs[i].bssid, bssid, 6);
+            s_hs[i].used = true;
+            return &s_hs[i];
+        }
+    }
+    Hs* oldest = oldestReusableSlot();
+    if (!oldest) return nullptr;
+    memset(oldest, 0, sizeof(Hs));
+    memcpy(oldest->bssid, bssid, 6);
+    oldest->used = true;
+    return oldest;
+}
+
+static Hs* slotForStation(const uint8_t* bssid, const uint8_t* sta) {
+    for (uint8_t i = 0; i < MAX_HS; i++) {
+        if (s_hs[i].used && memcmp(s_hs[i].bssid, bssid, 6) == 0 &&
+            memcmp(s_hs[i].sta, sta, 6) == 0) return &s_hs[i];
+    }
+    Hs* h = nullptr;
+    for (uint8_t i = 0; i < MAX_HS; i++) {
+        if (s_hs[i].used && memcmp(s_hs[i].bssid, bssid, 6) == 0 &&
+            isZeroMac(s_hs[i].sta)) {
+            h = &s_hs[i];
+            break;
+        }
+    }
+    if (!h) {
+        for (uint8_t i = 0; i < MAX_HS; i++) {
+            if (!s_hs[i].used) {
+                memset(&s_hs[i], 0, sizeof(Hs));
+                memcpy(s_hs[i].bssid, bssid, 6);
+                s_hs[i].used = true;
+                h = &s_hs[i];
+                break;
+            }
+        }
+    }
+    if (!h) {
+        uint8_t essid[32];
+        uint8_t essidLen = 0;
+        bool haveEssid = false;
+        for (uint8_t i = 0; i < MAX_HS; i++) {
+            if (s_hs[i].used && s_hs[i].haveEssid &&
+                memcmp(s_hs[i].bssid, bssid, 6) == 0) {
+                memcpy(essid, s_hs[i].essid, sizeof(essid));
+                essidLen = s_hs[i].essidLen;
+                haveEssid = true;
+                break;
+            }
+        }
+        Hs* oldest = oldestReusableSlot();
+        if (oldest) {
+            memset(oldest, 0, sizeof(Hs));
+            memcpy(oldest->bssid, bssid, 6);
+            oldest->used = true;
+            if (haveEssid) {
+                memcpy(oldest->essid, essid, sizeof(oldest->essid));
+                oldest->essidLen = essidLen;
+                oldest->haveEssid = true;
+            }
+            h = oldest;
+        }
+    }
+    if (!h) return nullptr;
+    memcpy(h->sta, sta, 6);
+    for (uint8_t i = 0; i < MAX_HS; i++) {
+        if (&s_hs[i] != h && s_hs[i].used &&
+            memcmp(s_hs[i].bssid, bssid, 6) == 0 && s_hs[i].haveEssid) {
+            memcpy(h->essid, s_hs[i].essid, sizeof(h->essid));
+            h->essidLen = s_hs[i].essidLen;
+            h->haveEssid = true;
+            break;
+        }
+    }
+    return h;
+}
+
+static void maybeWrite(Hs* h);
+
+static bool isHexText(const char* text, size_t len) {
+    if (!text) return false;
+    for (size_t i = 0; i < len; ++i) {
+        if (!isxdigit((unsigned char)text[i])) return false;
+    }
+    return true;
+}
+
+static bool hashLineHasStation(const char* line, const char* stationHex) {
+    if (!line || !stationHex ||
+        (strncmp(line, "WPA*01*", 7) != 0 &&
+         strncmp(line, "WPA*02*", 7) != 0)) return false;
+    const bool pmkid = strncmp(line, "WPA*01*", 7) == 0;
+
+    const char* field = line;
+    for (uint8_t i = 0; i < 4; ++i) {
+        field = strchr(field, '*');
+        if (!field) return false;
+        ++field;
+    }
+    if (strlen(field) < 13) return false;
+    for (uint8_t i = 0; i < 12; ++i) {
+        if (tolower((unsigned char)field[i]) !=
+                tolower((unsigned char)stationHex[i])) return false;
+    }
+    if (field[12] != '*') return false;
+
+    const char* ssid = field + 13;
+    const char* ssidEnd = strchr(ssid, '*');
+    if (!ssidEnd) return false;
+    const size_t ssidLen = (size_t)(ssidEnd - ssid);
+    if ((ssidLen & 1u) != 0 || !isHexText(ssid, ssidLen)) return false;
+
+    if (pmkid) {
+        const char* pmk = line + 7;
+        const char* ap = strchr(pmk, '*');
+        if (!ap || (size_t)(ap - pmk) != 32 || !isHexText(pmk, 32)) return false;
+        ap++;
+        const char* apEnd = strchr(ap, '*');
+        return apEnd && (size_t)(apEnd - ap) == 12 &&
+               isHexText(ap, 12) && strcmp(ssidEnd, "***01") == 0;
+    }
+
+    const char* nonce = ssidEnd + 1;
+    const char* nonceEnd = strchr(nonce, '*');
+    if (!nonceEnd || (size_t)(nonceEnd - nonce) != 64 ||
+        !isHexText(nonce, 64)) return false;
+    const char* eapol = nonceEnd + 1;
+    const char* pair = strrchr(eapol, '*');
+    if (!pair || (strcmp(pair, "*00") != 0 && strcmp(pair, "*02") != 0))
+        return false;
+    const size_t eapolLen = (size_t)(pair - eapol);
+    return eapolLen >= 194 && (eapolLen & 1u) == 0 &&
+           isHexText(eapol, eapolLen);
+}
+
+static bool fileHasStation(const char* path, const char* stationHex) {
+    File f = SD.open(path, "r");
+    if (!f) return false;
+
+    char line[1280];
+    size_t len = 0;
+    bool found = false;
+    bool overflow = false;
+    int ch;
+    while ((ch = f.read()) >= 0) {
+        if (ch == '\n') {
+            if (len > 0 && line[len - 1] == '\r') --len;
+            line[len] = '\0';
+            if (!overflow && hashLineHasStation(line, stationHex)) {
+                found = true;
+                break;
+            }
+            len = 0;
+            overflow = false;
+        } else if (len + 1 < sizeof(line)) {
+            line[len++] = (char)ch;
+        } else {
+            overflow = true;
+        }
+    }
+    if (!found && len > 0) {
+        if (len > 0 && line[len - 1] == '\r') --len;
+        line[len] = '\0';
+        found = !overflow && hashLineHasStation(line, stationHex);
+    }
+    f.close();
+    return found;
+}
+
+static bool writeLine(Hs* h, const char* suffix, const char* line) {
+    if (!h) return false;
+    Storage::ensureDir(Storage::DIR_HS);
+    char path[80];
+    makePath(h, suffix, path, sizeof(path));
+    char stationHex[13];
+    hexEnc(h->sta, 6, stationHex);
+    bool append = false;
+
+    if (SD.exists(path)) {
+        File probe = SD.open(path, "r");
+        size_t sz = probe ? probe.size() : 0;
+        if (probe) probe.close();
+        if (sz >= 64 && fileHasStation(path, stationHex)) {
+            Serial.printf("[22000] keep existing %s for STA %s\n",
+                          Storage::baseName(path), stationHex);
+            return true;
+        }
+        if (sz >= 64) {
+            append = true;
+        } else if (sz > 0) {
+            // Tiny/corrupt leftover — safe to replace.
+            SD.remove(path);
+        }
+    }
+
+    File f = SD.open(path, append ? "a" : "w");
+    if (!f) return false;
+    const size_t lineLen = strlen(line);
+    const size_t written = f.println(line);
+    f.close();
+    if (written < lineLen) return false;
+    char ssid[33];
+    essidOf(h, ssid);
+    if (ssid[0]) CapName::writeCompanionSsid(Storage::DIR_HS, Storage::baseName(path), ssid);
+    Serial.printf("[22000] %s %s for STA %s\n",
+                  append ? "appended" : "wrote",
+                  Storage::baseName(path), stationHex);
+    return true;
+}
+
+static void seedEssid(const uint8_t* bssid, const char* ssid) {
+    if (!bssid || !ssid || !ssid[0]) return;
+    if (strcasecmp(ssid, "HIDDEN") == 0 || strcmp(ssid, "[UNKNOWN]") == 0) return;
+    size_t n = strlen(ssid);
+    if (n > 32) n = 32;
+    bool found = false;
+    for (uint8_t i = 0; i < MAX_HS; i++) {
+        Hs* h = &s_hs[i];
+        if (!h->used || memcmp(h->bssid, bssid, 6) != 0) continue;
+        memcpy(h->essid, ssid, n);
+        h->essidLen = (uint8_t)n;
+        h->haveEssid = true;
+        h->dirty = false;
+        maybeWrite(h);
+        found = true;
+    }
+    if (!found) {
+        Hs* h = slotFor(bssid);
+        if (!h) return;
+        memcpy(h->essid, ssid, n);
+        h->essidLen = (uint8_t)n;
+        h->haveEssid = true;
+        maybeWrite(h);
+    }
+}
+
+static void maybeWrite(Hs* h) {
+    if (!h || !h->haveEssid || h->essidLen == 0) return;
+    char ap[13], sta[13], ess[65];
+    hexEnc(h->bssid, 6, ap);
+    hexEnc(h->sta, 6, sta);
+    hexEnc(h->essid, h->essidLen, ess);
+
+    // Same pairs as M5PORKCHOP: M1+M2 (00) or M2+M3 (02).
+    if (!h->wroteEapol && h->haveM2 && h->m2Len >= 97) {
+        uint8_t pair = 0xFF;
+        const uint8_t* nonce = nullptr;
+        // Pair 00 requires M1 and M2 to belong to the same exchange (matching
+        // replay counter) — otherwise anonce and MIC come from different
+        // attempts and hashcat will never recover the key.
+        if (h->haveAnonce && memcmp(h->anonceReplay, h->m2Replay, 8) == 0) {
+            pair = 0x00;
+            nonce = h->anonce;
+        } else if (h->haveAnonce3) {
+            pair = 0x02;
+            nonce = h->anonce3;
+        }
+        if (nonce) {
+            uint16_t eapolLen = (uint16_t)((h->m2[2] << 8) | h->m2[3]);
+            eapolLen = (uint16_t)(eapolLen + 4);
+            if (eapolLen > h->m2Len) eapolLen = h->m2Len;
+            if (eapolLen >= 97 && eapolLen <= MAX_EAPOL) {
+                uint8_t eapol[MAX_EAPOL];
+                memcpy(eapol, h->m2, eapolLen);
+                memset(eapol + 81, 0, 16);
+                char mic[33], an[65];
+                hexEnc(h->m2 + 81, 16, mic);
+                hexEnc(nonce, 32, an);
+                char ehex[MAX_EAPOL * 2 + 1];
+                hexEnc(eapol, eapolLen, ehex);
+                char line[1280];
+                int lineLen = snprintf(line, sizeof(line),
+                                       "WPA*02*%s*%s*%s*%s*%s*%s*%02x",
+                                       mic, ap, sta, ess, an, ehex, (unsigned)pair);
+                if (lineLen > 0 && (size_t)lineLen < sizeof(line)) {
+                    if (writeLine(h, "_hs.22000", line)) h->wroteEapol = true;
+                } else {
+                    Serial.println("[22000] EAPOL hash line exceeds output buffer");
+                }
+            }
+        }
+    }
+    if (!h->wroteEapol && h->havePmkid && !h->wrotePmkid) {
+        bool z = true;
+        for (int i = 0; i < 16; i++) if (h->pmkid[i]) { z = false; break; }
+        if (!z) {
+            char pmk[33];
+            hexEnc(h->pmkid, 16, pmk);
+            char line[160];
+            snprintf(line, sizeof(line), "WPA*01*%s*%s*%s*%s***01", pmk, ap, sta, ess);
+            if (writeLine(h, ".22000", line)) h->wrotePmkid = true;
+        }
+    }
+}
+
+static uint16_t hdrLen80211(const uint8_t* f, uint16_t len) {
+    if (len < 24) return 0;
+    uint16_t off = 24;
+    uint8_t type = (f[0] >> 2) & 0x03;
+    if (type == 2 && (f[0] & 0x80)) off += 2; // QoS data
+    if (f[1] & 0x80) off += 4;                 // HT ctrl / order
+    if ((f[1] & 0x03) == 0x03) off += 6;       // 4-address
+    return off;
+}
+
+static bool parseRsnPmkid(const uint8_t* ie, uint8_t ielen, uint8_t out[16]) {
+    // version(2)+group(4)+pairCnt(2)+pair*4+akmCnt(2)+akm*4+caps(2)+pmkidCnt(2)+pmkid
+    if (ielen < 20) return false;
+    uint16_t off = 2 + 4;
+    if (off + 2 > ielen) return false;
+    uint16_t pairCnt = (uint16_t)(ie[off] | (ie[off + 1] << 8));
+    off = (uint16_t)(off + 2 + pairCnt * 4);
+    if (off + 2 > ielen) return false;
+    uint16_t akmCnt = (uint16_t)(ie[off] | (ie[off + 1] << 8));
+    off = (uint16_t)(off + 2 + akmCnt * 4);
+    if (off + 2 > ielen) return false;
+    off = (uint16_t)(off + 2); // rsn caps
+    if (off + 2 > ielen) return false;
+    uint16_t pmkCnt = (uint16_t)(ie[off] | (ie[off + 1] << 8));
+    off = (uint16_t)(off + 2);
+    if (pmkCnt == 0 || off + 16 > ielen) return false;
+    bool z = true;
+    for (int i = 0; i < 16; i++) if (ie[off + i]) { z = false; break; }
+    if (z) return false;
+    memcpy(out, ie + off, 16);
+    return true;
+}
+
+static void parseAssoc(const uint8_t* f, uint16_t len) {
+    uint8_t subtype = (f[0] >> 4) & 0x0F;
+    // PMKID is sent by the CLIENT in Association/Reassociation REQUEST.
+    // subtype 0 = Association Request, subtype 2 = Reassociation Request.
+    // subtype 1 (Response) never contains a PMKID — catching it was wrong.
+    if (subtype != 0 && subtype != 2) return;
+    const uint8_t* bssid = f + 4;   // addr1 = destination AP
+    const uint8_t* sta   = f + 10;  // addr2 = source station
+    // Fixed fields: Assoc=4 bytes (CapInfo+ListenInterval),
+    //               Reassoc=10 bytes (+CurrentAP).
+    uint16_t fixedLen = (subtype == 2) ? 10 : 4;
+    uint16_t off = (uint16_t)(24 + fixedLen);
+    while (off + 2 <= len) {
+        uint8_t id = f[off];
+        uint8_t l = f[off + 1];
+        if (off + 2 + l > len) break;
+        if (id == 48) {
+            uint8_t pmk[16];
+            if (parseRsnPmkid(f + off + 2, l, pmk)) {
+                Hs* h = slotForStation(bssid, sta);
+                if (!h) {
+                    off = (uint16_t)(off + 2 + l);
+                    continue;
+                }
+                if (!selectStation(h, sta)) {
+                    off = (uint16_t)(off + 2 + l);
+                    continue;
+                }
+                memcpy(h->pmkid, pmk, 16);
+                h->havePmkid = true;
+                // No SD I/O from the IRQ - flushPending() handles it.
+                h->dirty = true;
+            }
+        }
+        off = (uint16_t)(off + 2 + l);
+    }
+}
+
+static void parseBeacon(const uint8_t* f, uint16_t len) {
+    uint8_t fc = f[0] & 0xFC;
+    if (fc != 0x80 && fc != 0x50) return;
+    const uint8_t* bssid = f + 16;
+    uint16_t off = 24 + 12;
+    if (off + 2 > len) return;
+    while (off + 2 <= len) {
+        uint8_t id = f[off];
+        uint8_t l = f[off + 1];
+        if (off + 2 + l > len) break;
+        if (id == 0 && l > 0 && l <= 32) {
+            for (uint8_t i = 0; i < MAX_HS; i++) {
+                Hs* h = &s_hs[i];
+                if (!h->used || memcmp(h->bssid, bssid, 6) != 0) continue;
+                memcpy(h->essid, f + off + 2, l);
+                h->essidLen = l;
+                h->haveEssid = true;
+                // No SD I/O here - this runs from the WiFi promiscuous IRQ.
+                // flushPending() in loop() will call maybeWrite() shortly.
+                h->dirty = true;
+            }
+            bool found = false;
+            for (uint8_t i = 0; i < MAX_HS; i++) {
+                if (s_hs[i].used && memcmp(s_hs[i].bssid, bssid, 6) == 0) {
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) {
+                Hs* h = slotFor(bssid);
+                if (!h) return;
+                memcpy(h->essid, f + off + 2, l);
+                h->essidLen = l;
+                h->haveEssid = true;
+                h->dirty = true;
+            }
+            return;
+        }
+        off = (uint16_t)(off + 2 + l);
+    }
+}
+
+static bool findPmkidKde(const uint8_t* payload, uint16_t len, uint8_t out[16]) {
+    // EAPOL key descriptor 0x02, key data at 99, PMKID KDE dd 14 00 0f ac 04
+    if (len < 121 || payload[4] != 0x02) return false;
+    uint16_t keyDataLen = (uint16_t)((payload[97] << 8) | payload[98]);
+    if (keyDataLen < 22 || len < 99 + keyDataLen) return false;
+    const uint8_t* keyData = payload + 99;
+    for (uint16_t i = 0; i + 22 <= keyDataLen; i++) {
+        if (keyData[i] == 0xdd && keyData[i + 1] == 0x14 &&
+            keyData[i + 2] == 0x00 && keyData[i + 3] == 0x0f &&
+            keyData[i + 4] == 0xac && keyData[i + 5] == 0x04) {
+            const uint8_t* p = keyData + i + 6;
+            bool z = true;
+            for (int k = 0; k < 16; k++) if (p[k]) { z = false; break; }
+            if (z) return false;
+            memcpy(out, p, 16);
+            return true;
+        }
+    }
+    return false;
+}
+
+static void parseEapol(const uint8_t* f, uint16_t len) {
+    uint16_t off = hdrLen80211(f, len);
+    if (off + 8 + 4 > len) return;
+    if (f[off] != 0xAA || f[off + 1] != 0xAA || f[off + 2] != 0x03) return;
+    if (f[off + 6] != 0x88 || f[off + 7] != 0x8E) return;
+    const uint8_t* e = f + off + 8;
+    uint16_t elen = (uint16_t)(len - off - 8);
+    if (elen < 99 || e[1] != 0x03) return;
+
+    uint16_t body = (uint16_t)((e[2] << 8) | e[3]);
+    uint16_t total = (uint16_t)(4 + body);
+    if (total > elen || total > MAX_EAPOL) return;
+
+    // keyInfo at EAPOL payload[5..6]
+    uint16_t ki = (uint16_t)((e[5] << 8) | e[6]);
+    uint8_t install = (uint8_t)((ki >> 6) & 1);
+    uint8_t keyAck = (uint8_t)((ki >> 7) & 1);
+    uint8_t keyMic = (uint8_t)((ki >> 8) & 1);
+    uint8_t secure = (uint8_t)((ki >> 9) & 1);
+
+    uint8_t msg = 0;
+    if (keyAck && !keyMic) msg = 1;
+    else if (!keyAck && keyMic && !secure) msg = 2;
+    else if (keyAck && keyMic && install) msg = 3;
+    else if (!keyAck && keyMic && secure) msg = 4;
+    if (msg == 0) return;
+
+    const uint8_t* srcMac = f + 10;
+    const uint8_t* dstMac = f + 4;
+    uint8_t bssid[6], sta[6];
+    if (msg == 1 || msg == 3) {
+        memcpy(bssid, srcMac, 6);
+        memcpy(sta, dstMac, 6);
+    } else {
+        memcpy(bssid, dstMac, 6);
+        memcpy(sta, srcMac, 6);
+    }
+
+    Hs* h = slotForStation(bssid, sta);
+    if (!h) return;
+
+    // First copy of each message wins — retransmit can change nonce/MIC.
+    // Key replay counter (e[9..16]) ties M1 and M2 to the *same* handshake attempt:
+    // an AP retry sends a new M1 with a bumped counter, and a stale M1/M2 pair
+    // produces a PMK/MIC that will never crack. Only pair when counters match.
+    if (msg == 1) {
+        if (!h->haveAnonce) {
+            // First M1 — store unconditionally.
+            memcpy(h->anonce, e + 17, 32);
+            memcpy(h->anonceReplay, e + 9, 8);
+            h->haveAnonce = true;
+        } else if (memcmp(e + 9, h->anonceReplay, 8) != 0) {
+            // New M1 with a different replay counter (AP retried handshake).
+            // §C: Replace M1. If stored M2 matched old M1 but not new M1,
+            // reset it so we don't keep a stale mismatched pair.
+            // If stored M2 happens to match the new M1 replay, keep it.
+            memcpy(h->anonce, e + 17, 32);
+            memcpy(h->anonceReplay, e + 9, 8);
+            if (h->haveM2 && !h->wroteEapol &&
+                memcmp(h->m2Replay, e + 9, 8) != 0) {
+                // §C: M2 replay no longer matches new M1 — discard it.
+                h->haveM2 = false;
+                h->m2Len = 0;
+                memset(h->m2Replay, 0, 8);
+            }
+            if (h->haveAnonce3 && !replayIncremented(e + 9, h->m3Replay)) {
+                h->haveAnonce3 = false;
+                h->haveM4 = false;
+                memset(h->anonce3, 0, sizeof(h->anonce3));
+                memset(h->m3Replay, 0, sizeof(h->m3Replay));
+                memset(h->m4Replay, 0, sizeof(h->m4Replay));
+            }
+        } else {
+            // Same replay counter as current M1 — retransmit, ignore nonce/replay change.
+            // But do handle the special case where an earlier M1 didn't match
+            // the M2 we're holding; this one does.
+            if (h->haveM2 && !h->wroteEapol &&
+                memcmp(h->anonceReplay, h->m2Replay, 8) != 0 &&
+                memcmp(e + 9, h->m2Replay, 8) == 0) {
+                memcpy(h->anonce, e + 17, 32);
+                memcpy(h->anonceReplay, e + 9, 8);
+            }
+        }
+        s_lastM1Ms = millis();
+        uint8_t pmk[16];
+        if (findPmkidKde(e, total, pmk)) {
+            memcpy(h->pmkid, pmk, 16);
+            h->havePmkid = true;
+        }
+    } else if (msg == 3) {
+        // M3 is the next replay-counter step after the validated M1/M2
+        // exchange. Do not let an unrelated M3 satisfy FULL depth.
+        if (h->haveAnonce &&
+        h->haveM2 &&
+        memcmp(h->anonceReplay, h->m2Replay, 8) == 0 &&
+        replayIncremented(h->anonceReplay, e + 9) &&
+        !h->haveAnonce3) {
+                memcpy(h->anonce3, e + 17, 32);
+                memcpy(h->m3Replay, e + 9, sizeof(h->m3Replay));
+                h->haveAnonce3 = true;
+        }
+    } else if (msg == 2) {
+        uint8_t thisReplay[8];
+        memcpy(thisReplay, e + 9, 8);
+
+        if (h->haveAnonce) {
+            // M1 is known — only accept M2 if its replay matches M1.
+            // A mismatched M2 must NEVER set haveM2 (pkt 2 & 3).
+            if (memcmp(thisReplay, h->anonceReplay, 8) == 0) {
+                // Matching replay — accept unconditionally (first or better).
+                memcpy(h->m2, e, total);
+                h->m2Len = total;
+                memcpy(h->m2Replay, thisReplay, 8);
+                h->haveM2 = true;
+            }
+            // else: replay mismatch — discard silently. haveM2 not set.
+        } else {
+            // M1 not yet seen — store M2 tentatively so we don't lose it.
+            // maybeWrite() will do the final replay check before writing.
+            // If M1 arrives later with a different replay, §C will clear this.
+            if (!h->haveM2) {
+                memcpy(h->m2, e, total);
+                h->m2Len = total;
+                memcpy(h->m2Replay, thisReplay, 8);
+                h->haveM2 = true;
+            } else if (h->haveM2) {
+                // Already have a tentative M2 — only replace if we have
+                // no choice yet (both tentative, keep first to be safe).
+            }
+        }
+    } else if (msg == 4) {
+        // M4 must acknowledge the same replay counter as the accepted M3.
+        if (h->haveAnonce3 && memcmp(h->m3Replay, e + 9, sizeof(h->m4Replay)) == 0) {
+            memcpy(h->m4Replay, e + 9, sizeof(h->m4Replay));
+            h->haveM4 = true;
+        }
+    }
+    // No SD I/O here - this runs from the WiFi promiscuous IRQ on every
+    // EAPOL frame. Mark the slot dirty and let flushPending() in loop()
+    // call maybeWrite() instead.
+    h->dirty = true;
+    h->lastSeenMs = millis();
+}
+
+void reset() {
+    if (!s_hs) return;
+    portENTER_CRITICAL(&s_hsMux);
+    memset(s_hs, 0, sizeof(Hs) * MAX_HS);
+    s_lastM1Ms = 0;
+    portEXIT_CRITICAL(&s_hsMux);
+}
+
+bool allocateMemory() {
+    if (s_hs) return true;
+    s_hs = new (std::nothrow) Hs[MAX_HS];
+    if (!s_hs) {
+        Serial.println("[22000] handshake table allocation failed");
+        return false;
+    }
+    memset(s_hs, 0, sizeof(Hs) * MAX_HS);
+    return true;
+}
+
+void releaseMemory() {
+    portENTER_CRITICAL(&s_hsMux);
+    Hs* table = s_hs;
+    s_hs = nullptr;
+    s_lastM1Ms = 0;
+    portEXIT_CRITICAL(&s_hsMux);
+    delete[] table;
+}
+
+void flushPending() {
+    // Loop-context only. Walks every slot and, for the ones feed() marked
+    // dirty from the IRQ, runs maybeWrite() to actually open/close the
+    // .22000 files on SD. Without this, parseBeacon/parseEapol/parseAssoc
+    // would have to do SD I/O directly from the promiscuous callback -
+    // SD isn't ISR-safe and the radio would WDT the moment any beacon or
+    // EAPOL arrived under load.
+    for (uint8_t i = 0; i < MAX_HS; i++) {
+        Hs snapshot;
+        portENTER_CRITICAL(&s_hsMux);
+        if (!s_hs[i].used || !s_hs[i].dirty) {
+            portEXIT_CRITICAL(&s_hsMux);
+            continue;
+        }
+        snapshot = s_hs[i];
+        s_hs[i].dirty = false;
+        portEXIT_CRITICAL(&s_hsMux);
+        // haveEssid is required by maybeWrite() anyway, and we want to
+        // drop the dirty bit even if no write was actually performed,
+        // otherwise we'd re-check the same slot every loop tick forever.
+        if (snapshot.haveEssid && snapshot.essidLen > 0) {
+            maybeWrite(&snapshot);
+            portENTER_CRITICAL(&s_hsMux);
+            if (s_hs[i].used &&
+                memcmp(s_hs[i].bssid, snapshot.bssid, 6) == 0 &&
+                memcmp(s_hs[i].sta, snapshot.sta, 6) == 0) {
+                s_hs[i].wroteEapol |= snapshot.wroteEapol;
+                s_hs[i].wrotePmkid |= snapshot.wrotePmkid;
+            }
+            portEXIT_CRITICAL(&s_hsMux);
+        }
+    }
+}
+
+bool shouldPauseDeauth() {
+    uint16_t pause = Config::radio().pauseMs;
+    if (pause < 200) pause = 200;
+    portENTER_CRITICAL(&s_hsMux);
+    uint32_t lastM1 = s_lastM1Ms;
+    portEXIT_CRITICAL(&s_hsMux);
+    return lastM1 != 0 && (millis() - lastM1) < pause;
+}
+
+bool hasPair(const uint8_t* bssid) {
+    if (!bssid) return false;
+    portENTER_CRITICAL(&s_hsMux);
+    for (uint8_t i = 0; i < MAX_HS; i++) {
+        if (s_hs[i].used && memcmp(s_hs[i].bssid, bssid, 6) == 0 &&
+            (s_hs[i].wroteEapol || s_hs[i].wrotePmkid)) {
+            portEXIT_CRITICAL(&s_hsMux);
+            return true;
+        }
+    }
+    portEXIT_CRITICAL(&s_hsMux);
+    return false;
+}
+
+uint16_t pairCount() {
+    uint16_t n = 0;
+    portENTER_CRITICAL(&s_hsMux);
+    for (uint8_t i = 0; i < MAX_HS; i++) {
+        if (s_hs[i].wroteEapol || s_hs[i].wrotePmkid) n++;
+    }
+    portEXIT_CRITICAL(&s_hsMux);
+    return n;
+}
+
+uint8_t handshakeMask(const uint8_t* bssid) {
+    if (!bssid) return 0;
+    portENTER_CRITICAL(&s_hsMux);
+    uint8_t result = 0;
+    for (uint8_t i = 0; i < MAX_HS; i++) {
+        if (s_hs[i].used && memcmp(s_hs[i].bssid, bssid, 6) == 0) {
+            const Hs& h = s_hs[i];
+            if (h.haveAnonce)  result |= 0x01; // M1
+            if (h.haveM2)      result |= 0x02; // M2
+            if (h.haveAnonce3) result |= 0x04; // M3
+            if (h.haveM4)      result |= 0x08; // M4
+            if (h.haveAnonce && h.haveM2 &&
+                memcmp(h.anonceReplay, h.m2Replay, 8) == 0)
+                result |= 0x10; // pair valid
+            if (h.wroteEapol || h.wrotePmkid)
+                result |= 0x20; // written
+        }
+    }
+    portEXIT_CRITICAL(&s_hsMux);
+    return result;
+}
+
+HandshakeProgress handshakeProgress(const uint8_t* bssid, uint8_t depth) {
+    HandshakeProgress result{};
+    if (!bssid) return result;
+
+    uint8_t bestScore = 0;
+    uint32_t bestSeen = 0;
+    portENTER_CRITICAL(&s_hsMux);
+    for (uint8_t i = 0; i < MAX_HS; i++) {
+        const Hs& h = s_hs[i];
+        if (!h.used || memcmp(h.bssid, bssid, 6) != 0) continue;
+
+        result.pmkid = result.pmkid || h.wrotePmkid;
+
+        uint8_t messages = 0;
+        const bool m1 = h.haveAnonce;
+        const bool pair = m1 && h.haveM2 &&
+                          memcmp(h.anonceReplay, h.m2Replay, 8) == 0;
+        const bool m3 = pair && h.haveAnonce3 &&
+                        replayIncremented(h.anonceReplay, h.m3Replay);
+        const bool m4 = m3 && h.haveM4 &&
+                        memcmp(h.m3Replay, h.m4Replay, 8) == 0;
+
+        if (m1) messages |= 0x01;
+        if (pair) messages |= 0x02;
+        if (m3) messages |= 0x04;
+        if (m4) messages |= 0x08;
+
+        uint8_t score = 0;
+        for (uint8_t bits = messages; bits; bits >>= 1)
+            score += bits & 1u;
+        const bool ready = h.wroteEapol &&
+                           (depth == 0 || (pair && m3)) &&
+                           (depth < 2 || m4);
+        if (score && (!result.hasStation ||
+                      (ready && !result.ready) ||
+                      (ready == result.ready &&
+                       (score > bestScore ||
+                        (score == bestScore && h.lastSeenMs > bestSeen))))) {
+            result.messages = messages;
+            memcpy(result.station, h.sta, sizeof(result.station));
+            result.hasStation = true;
+            result.ready = ready;
+            result.eapolWritten = h.wroteEapol;
+            bestScore = score;
+            bestSeen = h.lastSeenMs;
+        }
+    }
+    portEXIT_CRITICAL(&s_hsMux);
+    return result;
+}
+
+uint8_t globalHandshakeMask() {
+    portENTER_CRITICAL(&s_hsMux);
+    uint8_t result = 0;
+    for (uint8_t i = 0; i < MAX_HS; i++) {
+        if (!s_hs[i].used) continue;
+        const Hs& h = s_hs[i];
+        if (h.haveAnonce)  result |= 0x01; // M1 seen
+        if (h.haveM2)      result |= 0x02; // M2 seen
+        if (h.haveAnonce3) result |= 0x04; // M3 seen
+        if (h.haveM4)      result |= 0x08; // M4 seen
+        // bit4: pair valid (M1+M2 replay-matched, crackable)
+        if (h.haveAnonce && h.haveM2 &&
+            memcmp(h.anonceReplay, h.m2Replay, 8) == 0)
+            result |= 0x10;
+        // bit5: already written to SD
+        if (h.wroteEapol || h.wrotePmkid)
+            result |= 0x20;
+    }
+    portEXIT_CRITICAL(&s_hsMux);
+    return result;
+}
+
+bool hasHandshake(const uint8_t* bssid, uint8_t depth) {
+    if (!bssid) return false;
+    portENTER_CRITICAL(&s_hsMux);
+    for (uint8_t i = 0; i < MAX_HS; i++) {
+        const Hs& h = s_hs[i];
+        if (!h.used || memcmp(h.bssid, bssid, 6) != 0) continue;
+        if (depth == 0) {
+            if (h.wroteEapol || h.wrotePmkid) {
+                portEXIT_CRITICAL(&s_hsMux);
+                return true;
+            }
+            continue;
+        }
+        if (!h.wroteEapol ||
+            (!h.haveAnonce || !h.haveM2 ||
+             memcmp(h.anonceReplay, h.m2Replay, 8) != 0 ||
+             !h.haveAnonce3 ||
+             !replayIncremented(h.anonceReplay, h.m3Replay))) continue;
+        if (depth >= 2 &&
+            (!h.haveM4 ||
+             memcmp(h.m3Replay, h.m4Replay, 8) != 0)) continue;
+        portEXIT_CRITICAL(&s_hsMux);
+        return true;
+    }
+    portEXIT_CRITICAL(&s_hsMux);
+    return false;
+}
+
+bool hasHandshakeForStation(const uint8_t* bssid, const uint8_t* sta, uint8_t depth) {
+    if (!bssid || !sta) return false;
+    portENTER_CRITICAL(&s_hsMux);
+    for (uint8_t i = 0; i < MAX_HS; i++) {
+        const Hs& h = s_hs[i];
+        if (!h.used || memcmp(h.bssid, bssid, 6) != 0 ||
+            memcmp(h.sta, sta, 6) != 0) continue;
+        const bool pair = h.haveAnonce && h.haveM2 &&
+                          memcmp(h.anonceReplay, h.m2Replay, 8) == 0;
+        const bool m3 = pair && h.haveAnonce3 &&
+                        replayIncremented(h.anonceReplay, h.m3Replay);
+        const bool m4 = m3 && h.haveM4 &&
+                        memcmp(h.m3Replay, h.m4Replay, 8) == 0;
+        const bool written = depth == 0
+            ? (h.wroteEapol || h.wrotePmkid)
+            : h.wroteEapol;
+        bool result = written &&
+                      (depth == 0 || (pair && m3)) &&
+                      (depth < 2 || m4);
+        portEXIT_CRITICAL(&s_hsMux);
+        return result;
+    }
+    portEXIT_CRITICAL(&s_hsMux);
+    return false;
+}
+
+void feed(const uint8_t* frame, uint16_t len) {
+    if (!frame || len < 24) return;
+    portENTER_CRITICAL(&s_hsMux);
+    uint8_t type = (frame[0] >> 2) & 0x03;
+    if (type == 0) {
+        uint8_t subtype = (frame[0] >> 4) & 0x0F;
+        if (subtype == 8 || subtype == 5) parseBeacon(frame, len);
+        else if (subtype == 1) parseAssoc(frame, len);
+    } else if (type == 2) parseEapol(frame, len);
+    portEXIT_CRITICAL(&s_hsMux);
+}
+
+uint16_t convertPcap(const char* pcapPath) {
+    if (!pcapPath) return 0;
+    reset();
+    char hex[13] = {0}, nameSsid[33] = {0};
+    CapName::extractBssidHex(pcapPath, hex);
+    CapName::extractSsidFromName(pcapPath, nameSsid);
+    if (!nameSsid[0]) {
+        CapName::readCompanionSsid(Storage::DIR_HS, Storage::baseName(pcapPath), nameSsid);
+    }
+
+    File f = SD.open(pcapPath, "r");
+    if (!f) return 0;
+    uint8_t fh[24];
+    if (f.read(fh, 24) != 24) {
+        f.close();
+        return 0;
+    }
+    while (f.available()) {
+        uint8_t ph[16];
+        if (f.read(ph, 16) != 16) break;
+        uint32_t incl = (uint32_t)ph[8] | ((uint32_t)ph[9] << 8) |
+                        ((uint32_t)ph[10] << 16) | ((uint32_t)ph[11] << 24);
+        if (incl < 8 || incl > 2048) break;
+        uint8_t rth[8];
+        if (f.read(rth, 8) != 8) break;
+        uint16_t rtLen = (uint16_t)(rth[2] | (rth[3] << 8));
+        if (rtLen < 8 || rtLen > 64 || incl < rtLen) break;
+        if (rtLen > 8) {
+            uint8_t extra[56];
+            uint16_t nskip = (uint16_t)(rtLen - 8);
+            if (f.read(extra, nskip) != nskip) break;
+        }
+        uint32_t flen = incl - rtLen;
+        // Skip frames that exceed our static buffer (management/beacon noise).
+        // 1100 keeps all EAPOL (≤512 bytes of payload + 802.11 header ≈ 600)
+        // while dropping large data frames.  A failed drain means the file
+        // cursor is lost — stop rather than feed garbage.
+        if (flen > 1100) {
+            uint8_t dump[64];
+            bool fullySkipped = true;
+            uint32_t rem = flen;
+            while (rem) {
+                size_t c = rem > sizeof(dump) ? sizeof(dump) : rem;
+                if (f.read(dump, c) != (int)c) { fullySkipped = false; break; }
+                rem -= c;
+            }
+            if (!fullySkipped) break;  // cursor lost — abort
+            continue;
+        }
+        uint8_t frame[1100];
+        if (f.read(frame, flen) != (int)flen) break;
+        feed(frame, (uint16_t)flen);
+        yield();
+    }
+    f.close();
+
+    uint8_t mac[6];
+    if (hex[0] && CapName::hexToMac(hex, mac)) {
+        seedEssid(mac, nameSsid);
+    }
+
+    uint16_t n = 0;
+    for (uint8_t i = 0; i < MAX_HS; i++) {
+        if (s_hs[i].wroteEapol || s_hs[i].wrotePmkid) n++;
+    }
+    return n;
+}
+
+struct ConvCtx {
+    uint16_t n;
+};
+
+static void convOne(const char* name, size_t, void* raw) {
+    size_t L = strlen(name);
+    if (L < 6 || strcasecmp(name + L - 5, ".pcap") != 0) return;
+    char path[80];
+    snprintf(path, sizeof(path), "%s/%s", Storage::DIR_HS, name);
+    uint16_t add = convertPcap(path);
+    ((ConvCtx*)raw)->n = (uint16_t)(((ConvCtx*)raw)->n + add);
+}
+
+uint16_t convertAllPcaps() {
+    // Capture memory is released before Loot sync. Recreate the handshake
+    // table temporarily for offline PCAP conversion, then return it to heap.
+    bool temporary = (s_hs == nullptr);
+    if (temporary && !allocateMemory()) return 0;
+    ConvCtx ctx{0};
+    Storage::forEachHandshake(convOne, &ctx);
+    if (temporary) releaseMemory();
+    return ctx.n;
+}
+
+} // namespace Hc22000
