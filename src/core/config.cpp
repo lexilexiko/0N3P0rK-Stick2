@@ -30,7 +30,7 @@ static Preferences s_prefs;
 bool Config::init() {
     if (initialized) return true;
     if (!s_prefs.begin("onelpig", false)) {
-        Serial.println("[CFG] NVS open failed, using defaults");
+        Serial2.println("[CFG] NVS open failed, using defaults");
         initialized = true;
         return false;
     }
@@ -204,7 +204,7 @@ bool Config::init() {
     if (b.advMs > 200) b.advMs = 200;
 
     initialized = true;
-    Serial.printf("[CFG] pig=%s skin=%u season=%u\n", p.name, p.pigSkin, p.seasonMode);
+    Serial2.printf("[CFG] pig=%s skin=%u season=%u\n", p.name, p.pigSkin, p.seasonMode);
     return true;
 }
 

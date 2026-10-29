@@ -114,7 +114,7 @@ static uint32_t s_fileSize = 0;
 static uint32_t s_maxFileSize = DEFAULT_MAX_FILE_SIZE;
 static char     s_fileName[Storage::FILE_NAME_MAX];
 // One-shot log dedup for the "file is already at MAX_FILE_SIZE" branch
-// in openFileForBssid() вЂ” without this, the Serial would see one
+// in openFileForBssid() вЂ” without this, the Serial2 would see one
 // "[CAP] full" line per EAPOL frame, drowning out useful output. Reset
 // to all-zero every time we successfully open a fresh file.
 static uint8_t  s_fullLoggedBssid[6] = {};
@@ -303,12 +303,12 @@ static void loadStoredSkips() {
     if (!LittleFS.exists(Storage::FILE_RADIO_SKIP) && LittleFS.exists(SKIP_BAK_PATH)) {
         if (!LittleFS.rename(SKIP_BAK_PATH, Storage::FILE_RADIO_SKIP)) {
             s_storedSkipsLoaded = false;
-            Serial.println("[CAP] cannot recover persistent radio skip backup");
+            Serial2.println("[CAP] cannot recover persistent radio skip backup");
             return;
         }
     } else if (LittleFS.exists(Storage::FILE_RADIO_SKIP) && LittleFS.exists(SKIP_BAK_PATH)) {
         if (!LittleFS.remove(SKIP_BAK_PATH))
-            Serial.println("[CAP] stale radio skip backup could not be removed");
+            Serial2.println("[CAP] stale radio skip backup could not be removed");
     }
     if (LittleFS.exists(SKIP_TMP_PATH)) LittleFS.remove(SKIP_TMP_PATH);
     File file = LittleFS.open(Storage::FILE_RADIO_SKIP, FILE_READ);
@@ -371,7 +371,7 @@ static void loadStoredSkips() {
     s_storedSkipsLoaded = validFile;
     if (!validFile) {
         s_storedSkipCount = 0;
-        Serial.println("[CAP] invalid persistent radio skip file; refusing to overwrite");
+        Serial2.println("[CAP] invalid persistent radio skip file; refusing to overwrite");
     }
 }
 
@@ -1086,7 +1086,7 @@ static void migrateLegacyPcapName(const uint8_t* bssid, const char* preferredPat
         else if (psz >= sizeof(Pcap::FileHeader)) return;
     }
     if (LittleFS.rename(bestPath, preferredPath)) {
-        Serial.printf("[CAP] migrate pcap -> %s (%u bytes)\n",
+        Serial2.printf("[CAP] migrate pcap -> %s (%u bytes)\n",
                       Storage::baseName(preferredPath), (unsigned)bestSz);
     }
 }
@@ -1114,7 +1114,7 @@ static bool writePcapPacket(const uint8_t* frame, uint16_t flen, uint32_t ts,
         // The ESP32 Arduino File API has no portable truncate operation.
         // Close the stream and refuse further writes in this session rather
         // than pretending a partially written packet was valid.
-        Serial.printf("[CAP] short pcap write (%u/%u)\n",
+        Serial2.printf("[CAP] short pcap write (%u/%u)\n",
                       (unsigned)n, (unsigned)expect);
         closeFile();
         return false;
@@ -1354,7 +1354,7 @@ static bool openFileForBssid(const uint8_t* bssid) {
     if (exists) {
         File probe = LittleFS.open(path, "r");
         if (!probe) {
-            Serial.printf("[CAP] cannot inspect existing pcap, refusing capture: %s\n", name);
+            Serial2.printf("[CAP] cannot inspect existing pcap, refusing capture: %s\n", name);
             return false;
         }
         preSize = probe.size();
@@ -1364,23 +1364,23 @@ static bool openFileForBssid(const uint8_t* bssid) {
             hasHandshakeAtDepth(probe, preSize, bssid, s_hsDepth);
         probe.close();
         if (preSize > 0 && preSize < sizeof(Pcap::FileHeader)) {
-            Serial.printf("[CAP] removed corrupt %u-byte pcap: %s\n", (unsigned)preSize, name);
+            Serial2.printf("[CAP] removed corrupt %u-byte pcap: %s\n", (unsigned)preSize, name);
             LittleFS.remove(path);
             exists = false;
             preSize = 0;
         } else if (preSize >= sizeof(Pcap::FileHeader) && !appendable) {
-            Serial.printf("[CAP] existing pcap is invalid, preserving and refusing append: %s (%u bytes)\n",
+            Serial2.printf("[CAP] existing pcap is invalid, preserving and refusing append: %s (%u bytes)\n",
                           name, (unsigned)preSize);
             return false;
         } else if (alreadyCaptured) {
-            Serial.printf("[CAP] existing pcap already has HS depth %u, skipping %s\n",
+            Serial2.printf("[CAP] existing pcap already has HS depth %u, skipping %s\n",
                           (unsigned)s_hsDepth, name);
             addSkip(bssid);
             return false;
         }
     }
     if (!exists && st.handshakes >= MAX_FILES) {
-        Serial.println("[CAP] handshake cap (200 files) reached");
+        Serial2.println("[CAP] handshake cap (200 files) reached");
         return false;
     }
 
@@ -1392,7 +1392,7 @@ static bool openFileForBssid(const uint8_t* bssid) {
     // Safety: card said non-empty but open shows smaller вЂ” do not write,
     // do not remove (protect good data; Bruce-style refuse).
     if (preSize > 0 && s_fileSize < preSize) {
-        Serial.printf("[CAP] size mismatch (pre=%u open=%u), refuse write: %s\n",
+        Serial2.printf("[CAP] size mismatch (pre=%u open=%u), refuse write: %s\n",
                       (unsigned)preSize, (unsigned)s_fileSize, name);
         s_file.close();
         return false;
@@ -1410,7 +1410,7 @@ static bool openFileForBssid(const uint8_t* bssid) {
     if (s_fileSize >= s_maxFileSize) {
         closeFile();
         if (memcmp(s_fullLoggedBssid, bssid, 6) != 0) {
-            Serial.printf("[CAP] pcap at cap (%u bytes), skipping %s\n",
+            Serial2.printf("[CAP] pcap at cap (%u bytes), skipping %s\n",
                           (unsigned)s_fileSize, name);
             memcpy(s_fullLoggedBssid, bssid, 6);
         }
@@ -1451,7 +1451,7 @@ static bool openFileForBssid(const uint8_t* bssid) {
         // Existing good capture вЂ” append path. Log once per BSSID per boot.
         static uint8_t s_keptLog[6] = {0};
         if (memcmp(s_keptLog, bssid, 6) != 0) {
-            Serial.printf("[CAP] keep/append existing pcap %s (%u bytes)\n",
+            Serial2.printf("[CAP] keep/append existing pcap %s (%u bytes)\n",
                           name, (unsigned)s_fileSize);
             memcpy(s_keptLog, bssid, 6);
         }
@@ -1551,7 +1551,7 @@ static void expireStalePending(uint32_t now) {
     for (uint8_t i = 0; i < s_pendingSlots; i++) {
         PendingCapture& p = s_pending[i];
         if (!p.used || now - p.lastSeenMs < timeoutMs) continue;
-        Serial.printf("[HS] expired incomplete capture %02X:%02X:%02X:%02X:%02X:%02X / %02X:%02X:%02X:%02X:%02X:%02X\n",
+        Serial2.printf("[HS] expired incomplete capture %02X:%02X:%02X:%02X:%02X:%02X / %02X:%02X:%02X:%02X:%02X:%02X\n",
                       p.bssid[0], p.bssid[1], p.bssid[2],
                       p.bssid[3], p.bssid[4], p.bssid[5],
                       p.station[0], p.station[1], p.station[2],
@@ -1586,7 +1586,7 @@ static void rememberPending(const Slot& s, uint8_t message) {
             // pending frame against this first M1 before treating the pair
             // as complete.
             if (p->haveM2 && memcmp(p->m2Replay, thisReplay, 8) != 0) {
-                Serial.printf("[HS] first M1 replay=%02x%02x, reset mismatched tentative M2 replay=%02x%02x\n",
+                Serial2.printf("[HS] first M1 replay=%02x%02x, reset mismatched tentative M2 replay=%02x%02x\n",
                               thisReplay[6], thisReplay[7],
                               p->m2Replay[6], p->m2Replay[7]);
                 memset(&p->m2, 0, sizeof(p->m2));
@@ -1601,7 +1601,7 @@ static void rememberPending(const Slot& s, uint8_t message) {
             // В§C: Drop stored M2 only if its replay no longer matches
             // the new M1 вЂ” if it already matches keep the valid pair.
             if (p->haveM2 && memcmp(p->m2Replay, thisReplay, 8) != 0) {
-                Serial.printf("[HS] new M1 replay=%02x%02x, reset mismatched M2 replay=%02x%02x\n",
+                Serial2.printf("[HS] new M1 replay=%02x%02x, reset mismatched M2 replay=%02x%02x\n",
                               thisReplay[6], thisReplay[7],
                               p->m2Replay[6], p->m2Replay[7]);
                 memset(&p->m2, 0, sizeof(p->m2));
@@ -1636,7 +1636,7 @@ static void rememberPending(const Slot& s, uint8_t message) {
             p->haveM2 = true;
         } else {
             // Replay mismatch вЂ” this M2 belongs to a different attempt.
-            Serial.printf("[HS] M2 replay mismatch: M1=%02x%02x M2=%02x%02x вЂ” discarded\n",
+            Serial2.printf("[HS] M2 replay mismatch: M1=%02x%02x M2=%02x%02x вЂ” discarded\n",
                           p->m1Replay[6], p->m1Replay[7],
                           thisReplay[6], thisReplay[7]);
         }
@@ -1727,7 +1727,7 @@ static void releaseSkippedTarget(const uint8_t* bssid);
 
 static void autoSkipCapturedNetwork(const uint8_t* bssid) {
     if (isZeroMac(bssid)) {
-        Serial.println("[CAP] cannot auto-skip completed capture with empty BSSID");
+        Serial2.println("[CAP] cannot auto-skip completed capture with empty BSSID");
         Display::showToast("AUTO SKIP FAILED", 1400);
         return;
     }
@@ -1741,12 +1741,12 @@ static void autoSkipCapturedNetwork(const uint8_t* bssid) {
     releaseSkippedTarget(bssid);
 
     if (saved) {
-        Serial.printf("[CAP] saved completed network to persistent skip: %s (%02X:%02X:%02X:%02X:%02X:%02X)\n",
+        Serial2.printf("[CAP] saved completed network to persistent skip: %s (%02X:%02X:%02X:%02X:%02X:%02X)\n",
                       ssid[0] ? ssid : "?",
                       bssid[0], bssid[1], bssid[2], bssid[3], bssid[4], bssid[5]);
         Display::showToast("CAPTURED - SKIP SAVED", 1400);
     } else {
-        Serial.printf("[CAP] persistent auto-skip save failed; skipped for this run only: %s (%02X:%02X:%02X:%02X:%02X:%02X)\n",
+        Serial2.printf("[CAP] persistent auto-skip save failed; skipped for this run only: %s (%02X:%02X:%02X:%02X:%02X:%02X)\n",
                       ssid[0] ? ssid : "?",
                       bssid[0], bssid[1], bssid[2], bssid[3], bssid[4], bssid[5]);
         Display::showToast("SKIP SAVE FAILED - TEMP", 1600);
@@ -1758,7 +1758,7 @@ static void commitPendingCaptures() {
         PendingCapture& p = s_pending[i];
         if (!p.used || !p.haveM1 || !p.haveM2) continue;
         if (memcmp(p.m1Replay, p.m2Replay, sizeof(p.m1Replay)) != 0) {
-            Serial.printf("[HS] refusing mismatched pending pair M1=%02x%02x M2=%02x%02x\n",
+            Serial2.printf("[HS] refusing mismatched pending pair M1=%02x%02x M2=%02x%02x\n",
                           p.m1Replay[6], p.m1Replay[7],
                           p.m2Replay[6], p.m2Replay[7]);
             memset(&p, 0, sizeof(p));
@@ -1776,7 +1776,7 @@ static void commitPendingCaptures() {
             if (s_hsDepth >= 2) needed += pcapPacketSize(p.m4);
             if (s_fileSize > s_maxFileSize ||
                 needed > s_maxFileSize - s_fileSize) {
-                Serial.printf("[CAP] HS depth does not fit %s (%u+%u>%u)\n",
+                Serial2.printf("[CAP] HS depth does not fit %s (%u+%u>%u)\n",
                               s_fileName, (unsigned)s_fileSize, (unsigned)needed,
                               (unsigned)s_maxFileSize);
                 closeFile();
@@ -1832,10 +1832,10 @@ static void processPendingSsidLearn() {
     if (LittleFS.exists(newPath)) return;               // don't clobber an existing file
 
     if (!LittleFS.rename(hiddenPath, newPath)) {
-        Serial.printf("[CAP] rename %s -> %s failed\n", hiddenName, newName);
+        Serial2.printf("[CAP] rename %s -> %s failed\n", hiddenName, newName);
         return;
     }
-    Serial.printf("[CAP] %s -> %s (ssid learned)\n", hiddenName, newName);
+    Serial2.printf("[CAP] %s -> %s (ssid learned)\n", hiddenName, newName);
 
     // Splice the SSID-revealing frame into the renamed pcap. Without this,
     // Hc22000::convertPcap() run later on this file would still see nothing
@@ -1853,7 +1853,7 @@ static void processPendingSsidLearn() {
     size_t currentSize = f.size();
     size_t packetSize = sizeof(ph) + rtLen + beacon.len;
     if (currentSize + packetSize > s_maxFileSize) {
-        Serial.printf("[CAP] SSID beacon does not fit limit: %s (%u/%u)\n",
+        Serial2.printf("[CAP] SSID beacon does not fit limit: %s (%u/%u)\n",
                       newName, (unsigned)currentSize, (unsigned)s_maxFileSize);
         f.close();
         return;
@@ -1864,7 +1864,7 @@ static void processPendingSsidLearn() {
     written += f.write(beacon.frame, beacon.len);
     f.close();
     if (written != packetSize) {
-        Serial.printf("[CAP] short SSID beacon write: %s (%u/%u)\n",
+        Serial2.printf("[CAP] short SSID beacon write: %s (%u/%u)\n",
                       newName, (unsigned)written, (unsigned)packetSize);
     }
 }
@@ -2090,7 +2090,7 @@ static void maybeRotateMethod() {
     s_methodStartMs = millis();
     s_pairAtSwitch = pairs;
     setMethodTag();
-    Serial.printf("[CAP] AUTO switch -> %s\n", s_cnt.methodTag);
+    Serial2.printf("[CAP] AUTO switch -> %s\n", s_cnt.methodTag);
 }
 
 static void decayBeaconActivity(uint32_t now) {
@@ -2119,7 +2119,7 @@ void begin() {
 
 static void startCommon(RunMode mode) {
     bool sdOk = Storage::begin();
-    if (!sdOk) Serial.println("[CAP] SD missing - EAPOL counted, files may fail");
+    if (!sdOk) Serial2.println("[CAP] SD missing - EAPOL counted, files may fail");
 
     if (s_running) stop();
     if (!ensureSkipMemory()) {
@@ -2138,13 +2138,13 @@ static void startCommon(RunMode mode) {
     if (s_pendingSlots < 4 || s_pendingSlots > 16 || (s_pendingSlots & 1u))
         s_pendingSlots = 4;
     if (!allocateCaptureMemory()) {
-        Serial.println("[CAP] capture buffers allocation failed");
+        Serial2.println("[CAP] capture buffers allocation failed");
         releaseSkipMemory();
         s_mode = RunMode::Off;
         return;
     }
     if (!Hc22000::allocateMemory()) {
-        Serial.println("[CAP] 22000 table allocation failed");
+        Serial2.println("[CAP] 22000 table allocation failed");
         delete[] s_ring;
         delete[] s_pending;
         delete[] s_beacons;
@@ -2268,7 +2268,7 @@ static void startCommon(RunMode mode) {
     bool apOk = WiFi.softAP(apName, "onelpig123", startCh, 1 /* hidden */, 4);
     delay(80);
     WiFi.softAPmacAddress(s_apMac);
-    Serial.printf("[CAP] wifi AP+STA hidden=%s ch=%u ap=%s\n",
+    Serial2.printf("[CAP] wifi AP+STA hidden=%s ch=%u ap=%s\n",
                   apName, (unsigned)startCh, apOk ? "ok" : "fail");
 
     wifi_promiscuous_filter_t filt{};
@@ -2290,7 +2290,7 @@ static void startCommon(RunMode mode) {
     } else {
         clearBarTarget();
     }
-    Serial.printf("[CAP] %s hop=%u deauth=%u ch=%u method=%s sd=%u\n",
+    Serial2.printf("[CAP] %s hop=%u deauth=%u ch=%u method=%s sd=%u\n",
                   mode == RunMode::Aggressive ? "AGGRESSIVE"
                   : (mode == RunMode::Pinned ? "PINNED" : "light"),
                   (unsigned)s_hopEnabled, (unsigned)s_deauthEnabled,
@@ -2336,7 +2336,7 @@ void stop() {
     WiFi.disconnect(true, false);
     WiFi.mode(WIFI_OFF);
     (void)hopped;
-    Serial.printf("[CAP] stopped seen=%u eapol=%u written=%u deauth=%u dropped=%u\n",
+    Serial2.printf("[CAP] stopped seen=%u eapol=%u written=%u deauth=%u dropped=%u\n",
                   s_cnt.framesSeen, s_cnt.framesEapol,
                   s_cnt.framesWritten, s_cnt.framesDeauth,
                   s_cnt.framesDropped);
@@ -2355,7 +2355,7 @@ void stop() {
     s_write = 0;
     s_read = 0;
     releaseSkipMemory();
-    Serial.printf("[CAP] capture memory released heap=%u\n",
+    Serial2.printf("[CAP] capture memory released heap=%u\n",
                   (unsigned)ESP.getFreeHeap());
 }
 
@@ -2509,7 +2509,7 @@ bool skipCurrent() {
     }
     if (!saved) strncat(msg, " TEMP", sizeof(msg) - strlen(msg) - 1);
     Display::showToast(msg, 1200);
-    Serial.printf("[CAP] %s skip %s (%02X:%02X:%02X:%02X:%02X:%02X) n=%u\n",
+    Serial2.printf("[CAP] %s skip %s (%02X:%02X:%02X:%02X:%02X:%02X) n=%u\n",
                   saved ? "persistent" : "temporary",
                   ssid[0] ? ssid : "?",
                   target[0], target[1], target[2], target[3], target[4], target[5],
@@ -2524,7 +2524,7 @@ static bool openSkipMenu() {
     if (!s_menuEntries) {
         s_menuEntries = new (std::nothrow) SkipEntry[MENU_ENTRY_MAX];
         if (!s_menuEntries) {
-            Serial.println("[CAP] skip menu allocation failed");
+            Serial2.println("[CAP] skip menu allocation failed");
             Display::showToast("SKIP MEMORY FAIL", 1200);
             return false;
         }
@@ -2537,7 +2537,7 @@ static bool openSkipMenu() {
 
     esp_err_t err = esp_wifi_set_promiscuous(false);
     if (err != ESP_OK) {
-        Serial.printf("[CAP] cannot pause promiscuous RX for skip menu: %d\n", (int)err);
+        Serial2.printf("[CAP] cannot pause promiscuous RX for skip menu: %d\n", (int)err);
         Display::showToast("RADIO PAUSE FAIL", 1200);
         delete[] s_menuEntries;
         s_menuEntries = nullptr;
@@ -2553,7 +2553,7 @@ static bool openSkipMenu() {
     s_skipMenuDownWas = false;
     s_skipMenuEnterWas = false;
     SFX::play(SFX::MENU_CLICK);
-    Serial.printf("[CAP] skip menu opened heap=%u\n", (unsigned)ESP.getFreeHeap());
+    Serial2.printf("[CAP] skip menu opened heap=%u\n", (unsigned)ESP.getFreeHeap());
     return true;
 }
 
@@ -2562,7 +2562,7 @@ static void closeSkipMenu() {
     // fails. The radio error must not strand the menu buffer on the heap.
     esp_err_t err = esp_wifi_set_promiscuous(true);
     if (err != ESP_OK) {
-        Serial.printf("[CAP] cannot resume promiscuous RX after skip menu: %d\n", (int)err);
+        Serial2.printf("[CAP] cannot resume promiscuous RX after skip menu: %d\n", (int)err);
         Display::showToast("RADIO RESUME FAIL", 1500);
     }
     s_skipMenuOpen = false;
@@ -2575,7 +2575,7 @@ static void closeSkipMenu() {
     delete[] s_menuEntries;
     s_menuEntries = nullptr;
     s_lastHopMs = millis();
-    Serial.printf("[CAP] skip menu closed heap=%u\n", (unsigned)ESP.getFreeHeap());
+    Serial2.printf("[CAP] skip menu closed heap=%u\n", (unsigned)ESP.getFreeHeap());
     SFX::play(SFX::BACK_NAV);
 }
 
@@ -2640,7 +2640,7 @@ static void updateSkipMenu() {
     const bool next = !entry.enabled;
     if (!setStoredSkip(entry.bssid, entry.ssid, next)) {
         Display::showToast("SD SAVE FAILED", 1200);
-        Serial.println("[CAP] failed to save persistent radio skip list");
+        Serial2.println("[CAP] failed to save persistent radio skip list");
         return;
     }
     entry.enabled = next;
