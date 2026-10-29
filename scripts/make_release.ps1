@@ -16,7 +16,7 @@
 
 $ErrorActionPreference = "Stop"
 
-$EnvName     = "m5cardputer"
+$EnvName     = "m5stickcplus2"
 $ProjectRoot = Split-Path -Parent $PSScriptRoot
 $BuildDir    = Join-Path $ProjectRoot ".pio\build\$EnvName"
 $DistDir     = Join-Path $ProjectRoot "docs\firmware"
