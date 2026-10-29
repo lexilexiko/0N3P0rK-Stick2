@@ -10,7 +10,7 @@
 #include "../audio/sfx.h"
 #include "../storage/littlefs_ops.h"
 #include <Preferences.h>
-#include <SD.h>
+#include <LittleFS.h>
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -182,8 +182,8 @@ static void talkAdd(TalkKind k, const char* line) {
 }
 
 static void writeTalkSeed(const char* path, const char* body) {
-    if (SD.exists(path)) return;
-    File f = SD.open(path, FILE_WRITE);
+    if (LittleFS.exists(path)) return;
+    File f = LittleFS.open(path, FILE_WRITE);
     if (!f) return;
     f.print(body);
     f.close();
@@ -192,7 +192,7 @@ static void writeTalkSeed(const char* path, const char* body) {
 static void loadTalkFile(TalkKind k) {
     char path[48];
     snprintf(path, sizeof(path), "%s/%s", Storage::DIR_TALK, talkFile(k));
-    File f = SD.open(path, FILE_READ);
+    File f = LittleFS.open(path, FILE_READ);
     if (!f) return;
     char buf[TALK_LEN];
     uint8_t n = 0;

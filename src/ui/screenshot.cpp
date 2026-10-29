@@ -4,7 +4,7 @@
 #include "../core/sd_layout.h"
 #include "../ui/keys.h"
 #include <M5Unified.h>
-#include <SD.h>
+#include <LittleFS.h>
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -23,7 +23,7 @@ bool busy() { return s_busy; }
 
 static uint16_t nextNumber(const char* dir) {
     uint16_t maxNum = 0;
-    File d = SD.open(dir);
+    File d = LittleFS.open(dir);
     if (!d || !d.isDirectory()) return 1;
     File entry;
     while ((entry = d.openNextFile())) {
@@ -61,7 +61,7 @@ bool take() {
     s_busy = true;
 
     const char* dir = SDLayout::screenshotsDir();
-    if (!SD.exists(dir)) SD.mkdir(dir);
+    if (!LittleFS.exists(dir)) LittleFS.mkdir(dir);
 
     uint16_t num = nextNumber(dir);
     char path[48];
@@ -70,7 +70,7 @@ bool take() {
 
     File file;
     for (int i = 0; i < RETRY_N; i++) {
-        file = SD.open(path, FILE_WRITE);
+        file = LittleFS.open(path, FILE_WRITE);
         if (file) break;
         delay(RETRY_MS);
     }

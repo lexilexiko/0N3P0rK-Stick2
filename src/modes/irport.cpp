@@ -8,7 +8,7 @@
 #include "../core/app.h"
 #include "../storage/littlefs_ops.h"
 #include <M5Unified.h>
-#include <SD.h>
+#include <LittleFS.h>
 #include <string.h>
 #include <stdlib.h>
 
@@ -39,7 +39,7 @@ void IrPortMode::loadBuiltin() {
 
 bool IrPortMode::loadFile(const char* path) {
     if (!Config::isSDAvailable()) return false;
-    File f = SD.open(path, FILE_READ);
+    File f = LittleFS.open(path, FILE_READ);
     if (!f) return false;
     codeCount = 0;
     pack = Pack::CUSTOM;
@@ -114,7 +114,7 @@ void IrPortMode::scanFiles() {
     };
 
     auto scanDir = [&](const char* dir) {
-        File d = SD.open(dir);
+        File d = LittleFS.open(dir);
         if (!d || !d.isDirectory()) { if (d) d.close(); return; }
         File e = d.openNextFile();
         while (e && fileCount < MAX_FILES) {
@@ -248,7 +248,7 @@ void IrPortMode::handleInput() {
             if (!fileCount) return;
             char path[80];
             snprintf(path, sizeof(path), "%s/%s", Storage::DIR_IR, fileNames[fileSel]);
-            if (!SD.exists(path)) snprintf(path, sizeof(path), "/ir/%s", fileNames[fileSel]);
+            if (!LittleFS.exists(path)) snprintf(path, sizeof(path), "/ir/%s", fileNames[fileSel]);
             if (loadFile(path)) {
                 phase = Phase::READY;
                 snprintf(statusMsg, sizeof(statusMsg), "LOADED %u", (unsigned)codeCount);

@@ -5,7 +5,7 @@
 #include "../core/app.h"
 #include "../storage/littlefs_ops.h"
 #include "../cap/capture_name.h"
-#include <SD.h>
+#include <LittleFS.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -179,7 +179,7 @@ static bool collectCaptureNames(char (**namesOut)[Storage::FILE_NAME_MAX],
     *namesOut = nullptr;
     *countOut = 0;
 
-    File dir = SD.open(Storage::DIR_HS);
+    File dir = LittleFS.open(Storage::DIR_HS);
     if (!dir || !dir.isDirectory()) {
         if (dir) dir.close();
         return false;
@@ -872,7 +872,7 @@ void InspectorPig::refreshList() {
         snprintf(statusMsg, sizeof(statusMsg), "NO SD");
         return;
     }
-    File dir = SD.open(Storage::DIR_HS);
+    File dir = LittleFS.open(Storage::DIR_HS);
     if (!dir || !dir.isDirectory()) {
         if (dir) dir.close();
         snprintf(statusMsg, sizeof(statusMsg), "NO /handshakes");
@@ -942,7 +942,7 @@ void InspectorPig::switchTab(int8_t dir) {
 void InspectorPig::loadVerdicts() {
     if (!entries || entryCount == 0) return;
     if (!Storage::fileExists(VERDICT_FILE)) return;
-    File f = SD.open(VERDICT_FILE, "r");
+    File f = LittleFS.open(VERDICT_FILE, "r");
     if (!f) return;
     char line[96];
     while (f.available()) {
@@ -975,8 +975,8 @@ void InspectorPig::loadVerdicts() {
 void InspectorPig::saveVerdict(const Entry& e) {
     if (!e.name[0]) return;
     Storage::ensureDir(Storage::DIR_INSPECTOR);
-    if (Storage::fileSize(VERDICT_FILE) > VERDICT_MAX) SD.remove(VERDICT_FILE);
-    File f = SD.open(VERDICT_FILE, "a");
+    if (Storage::fileSize(VERDICT_FILE) > VERDICT_MAX) LittleFS.remove(VERDICT_FILE);
+    File f = LittleFS.open(VERDICT_FILE, "a");
     if (!f) return;
     f.printf("%s|%u|%s\n", e.name, (unsigned)e.score, e.verdict);
     f.flush();
@@ -985,7 +985,7 @@ void InspectorPig::saveVerdict(const Entry& e) {
 
 uint8_t InspectorPig::analyzePath(const char* path, Kind kind) {
     if (!Storage::available() || !path) return 0;
-    File f = SD.open(path, "r");
+    File f = LittleFS.open(path, "r");
     if (!f) {
         emit("error      : cannot open file");
         return 0;
@@ -1069,7 +1069,7 @@ void InspectorPig::inspectSelected() {
     snprintf(out, sizeof(out), "%s/%s.txt", Storage::DIR_INSPECTOR, stem);
     if (s_reportOut) s_reportOut.close();
     s_streamOnly = false;
-    s_reportOut = SD.open(out, "w");
+    s_reportOut = LittleFS.open(out, "w");
     const bool reportOk = (bool)s_reportOut;
 
     char path[96];
@@ -1122,7 +1122,7 @@ void InspectorPig::inspectAll() {
     reportBegin();
     Storage::ensureDir(Storage::DIR_INSPECTOR);
     if (s_reportOut) s_reportOut.close();
-    s_reportOut = SD.open("/0N3P0rK/inspector/report.txt", "w");
+    s_reportOut = LittleFS.open("/0N3P0rK/inspector/report.txt", "w");
     const bool reportOk = (bool)s_reportOut;
 
     s_streamOnly = true;
@@ -1484,7 +1484,7 @@ void InspectorPig::emit(const char* fmt, ...) {
 void InspectorPig::reportFlush(const char* path) {
     if (!lines) return;                 // nothing buffered outside a visit
     Storage::ensureDir(Storage::DIR_INSPECTOR);
-    File f = SD.open(path, "w");
+    File f = LittleFS.open(path, "w");
     if (!f) return;
     f.printf("# 0N3P0rK InspectorPig report\n");
     for (uint8_t i = 0; i < lineCount; i++) f.println(lines[i]);
@@ -1521,7 +1521,7 @@ uint8_t InspectorPig::checkOne(const char* filename, char* msg, size_t msgLen) {
     Storage::ensureDir(Storage::DIR_INSPECTOR);
     if (s_reportOut) s_reportOut.close();
     s_streamOnly = true;                 // file only: no screen lines exist here
-    s_reportOut = SD.open(report, "w");
+    s_reportOut = LittleFS.open(report, "w");
     const bool reportOk = (bool)s_reportOut;
 
     emit("file       : %s", filename);
@@ -1574,7 +1574,7 @@ uint16_t InspectorPig::checkAll(char* msg, size_t msgLen) {
     char reportPath[64];
     snprintf(reportPath, sizeof(reportPath), "%s/report.txt", Storage::DIR_INSPECTOR);
     s_streamOnly = true;
-    s_reportOut = SD.open(reportPath, "w");
+    s_reportOut = LittleFS.open(reportPath, "w");
     const bool reportOk = (bool)s_reportOut;
 
     emit("scope      : ALL PCAP + .22000 in /0N3P0rK/handshakes");

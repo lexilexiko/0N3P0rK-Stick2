@@ -14,7 +14,7 @@
 
 #include <Arduino.h>
 #include <M5Unified.h>
-#include <SD.h>
+#include <LittleFS.h>
 
 class InspectorPig {
 public:

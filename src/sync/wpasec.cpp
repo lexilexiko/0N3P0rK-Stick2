@@ -8,7 +8,7 @@
 #include "tls.h"
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
-#include <SD.h>
+#include <LittleFS.h>
 #include <ctype.h>
 #include <string.h>
 #include <strings.h>
@@ -122,7 +122,7 @@ bool WPASec::loadUploadedList() {
         Storage::fileExists("/0N3P0rK/wpa-sec/wpasec_uploaded.txt"))
         upPath = "/0N3P0rK/wpa-sec/wpasec_uploaded.txt";
     if (!Storage::fileExists(upPath)) return true;
-    File f = SD.open(upPath, "r");
+    File f = LittleFS.open(upPath, "r");
     if (!f) return false;
     char line[64];
     while (f.available() && uploadedCache.size() < WPASEC_MAX_CACHE) {
@@ -141,16 +141,16 @@ bool WPASec::loadUploadedList() {
 bool WPASec::saveUploadedList() {
     Storage::ensureDir(Storage::DIR_WPASEC);
     const char* tmp = "/0N3P0rK/wpa-sec/uploaded.tmp";
-    File f = SD.open(tmp, "w");
+    File f = LittleFS.open(tmp, "w");
     if (!f) return false;
     for (const auto& e : uploadedCache) {
         if (e.bssid[0]) f.println(e.bssid);
     }
     f.flush();
     f.close();
-    SD.remove(Storage::FILE_WPASEC_UPLOADED);
-    if (!SD.rename(tmp, Storage::FILE_WPASEC_UPLOADED)) {
-        SD.remove(tmp);
+    LittleFS.remove(Storage::FILE_WPASEC_UPLOADED);
+    if (!LittleFS.rename(tmp, Storage::FILE_WPASEC_UPLOADED)) {
+        LittleFS.remove(tmp);
         return false;
     }
     Serial.printf("[WPASEC] saved %u uploaded\n", (unsigned)uploadedCache.size());
@@ -167,7 +167,7 @@ bool WPASec::loadCache() {
         Storage::fileExists("/0N3P0rK/wpa-sec/wpasec_results.txt"))
         resPath = "/0N3P0rK/wpa-sec/wpasec_results.txt";
     if (Storage::fileExists(resPath)) {
-        File f = SD.open(resPath, "r");
+        File f = LittleFS.open(resPath, "r");
         if (f) {
             char line[320];
             while (f.available() && crackedCache.size() < WPASEC_MAX_CACHE) {
@@ -263,7 +263,7 @@ void WPASec::markAsUploaded(const char* bssid) {
 
 bool WPASec::uploadSingleCapture(const char* filepath, const char* bssid, const char* apiKey) {
     if (!filepath || !bssid || !apiKey) return false;
-    File capFile = SD.open(filepath, "r");
+    File capFile = LittleFS.open(filepath, "r");
     if (!capFile) {
         snprintf(lastError, sizeof(lastError), "open fail");
         return false;
@@ -403,7 +403,7 @@ bool WPASec::downloadPotfile(const char* apiKey, uint16_t& newCracks) {
 
     Storage::ensureDir(Storage::DIR_RESULTS);
     const char* potTmp = "/0N3P0rK/wpa-sec/results.tmp";
-    File out = SD.open(potTmp, "w");
+    File out = LittleFS.open(potTmp, "w");
     if (!out) {
         client.stop();
         snprintf(lastError, sizeof(lastError), "pot save");
@@ -441,14 +441,14 @@ bool WPASec::downloadPotfile(const char* apiKey, uint16_t& newCracks) {
     client.stop();
 
     if (lines == 0) {
-        SD.remove(potTmp);
+        LittleFS.remove(potTmp);
         snprintf(lastError, sizeof(lastError), "pot empty");
         Serial.println("[WPASEC] pot no lines, keep old");
         return false;
     }
-    SD.remove(Storage::FILE_WPASEC_RESULTS);
-    if (!SD.rename(potTmp, Storage::FILE_WPASEC_RESULTS)) {
-        SD.remove(potTmp);
+    LittleFS.remove(Storage::FILE_WPASEC_RESULTS);
+    if (!LittleFS.rename(potTmp, Storage::FILE_WPASEC_RESULTS)) {
+        LittleFS.remove(potTmp);
         snprintf(lastError, sizeof(lastError), "pot save");
         return false;
     }
@@ -520,8 +520,8 @@ WPASecSyncResult WPASec::syncCaptures(const char* apiKey, WPASecProgressCallback
 
     loadCache();
     Storage::ensureDir(Storage::DIR_WPASEC);
-    SD.remove(WPA_PENDING);
-    File pendOut = SD.open(WPA_PENDING, "w");
+    LittleFS.remove(WPA_PENDING);
+    File pendOut = LittleFS.open(WPA_PENDING, "w");
     WpaPendCtx pend{};
     pend.out = pendOut ? &pendOut : nullptr;
     if (pend.out) Storage::forEachHandshake(wpaCollect, &pend);
@@ -534,7 +534,7 @@ WPASecSyncResult WPASec::syncCaptures(const char* apiKey, WPASecProgressCallback
     if (cb) cb("Uploading", 0, pend.count);
     ioXferPhase("UPLOAD", 0, pend.count);
     if (pend.count > 0) {
-        File pendIn = SD.open(WPA_PENDING, "r");
+        File pendIn = LittleFS.open(WPA_PENDING, "r");
         uint16_t i = 0;
         char line[96];
         while (pendIn && pendIn.available()) {
@@ -567,7 +567,7 @@ WPASecSyncResult WPASec::syncCaptures(const char* apiKey, WPASecProgressCallback
         }
         if (pendIn) pendIn.close();
     }
-    SD.remove(WPA_PENDING);
+    LittleFS.remove(WPA_PENDING);
     if (result.uploaded > 0) saveUploadedList();
 
     if (cb) cb("Potfile", pend.count, pend.count);

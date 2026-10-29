@@ -3,7 +3,7 @@
 #include "capture_name.h"
 #include "../storage/littlefs_ops.h"
 #include "../core/config.h"
-#include <SD.h>
+#include <LittleFS.h>
 #include <string.h>
 #include <strings.h>
 #include <stdio.h>
@@ -44,7 +44,7 @@ struct Hs {
     // Set true by feed() (which can run from the WiFi promiscuous IRQ) when
     // an in-memory slot field changed. Cleared by flushPending() in loop()
     // after maybeWrite() has had a chance to actually open the SD file.
-    // Without this, maybeWrite() would SD.open()/write()/close() straight
+    // Without this, maybeWrite() would LittleFS.open()/write()/close() straight
     // from the ISR on every beacon/EAPOL - guaranteed WDT/panic under load.
     bool dirty;
 };
@@ -289,7 +289,7 @@ static bool hashLineHasStation(const char* line, const char* stationHex) {
 }
 
 static bool fileHasStation(const char* path, const char* stationHex) {
-    File f = SD.open(path, "r");
+    File f = LittleFS.open(path, "r");
     if (!f) return false;
 
     char line[1280];
@@ -331,8 +331,8 @@ static bool writeLine(Hs* h, const char* suffix, const char* line) {
     hexEnc(h->sta, 6, stationHex);
     bool append = false;
 
-    if (SD.exists(path)) {
-        File probe = SD.open(path, "r");
+    if (LittleFS.exists(path)) {
+        File probe = LittleFS.open(path, "r");
         size_t sz = probe ? probe.size() : 0;
         if (probe) probe.close();
         if (sz >= 64 && fileHasStation(path, stationHex)) {
@@ -344,11 +344,11 @@ static bool writeLine(Hs* h, const char* suffix, const char* line) {
             append = true;
         } else if (sz > 0) {
             // Tiny/corrupt leftover — safe to replace.
-            SD.remove(path);
+            LittleFS.remove(path);
         }
     }
 
-    File f = SD.open(path, append ? "a" : "w");
+    File f = LittleFS.open(path, append ? "a" : "w");
     if (!f) return false;
     const size_t lineLen = strlen(line);
     const size_t written = f.println(line);
@@ -757,7 +757,7 @@ void releaseMemory() {
 void flushPending() {
     // Loop-context only. Walks every slot and, for the ones feed() marked
     // dirty from the IRQ, runs maybeWrite() to actually open/close the
-    // .22000 files on SD. Without this, parseBeacon/parseEapol/parseAssoc
+    // .22000 files on LittleFS. Without this, parseBeacon/parseEapol/parseAssoc
     // would have to do SD I/O directly from the promiscuous callback -
     // SD isn't ISR-safe and the radio would WDT the moment any beacon or
     // EAPOL arrived under load.
@@ -992,7 +992,7 @@ uint16_t convertPcap(const char* pcapPath) {
         CapName::readCompanionSsid(Storage::DIR_HS, Storage::baseName(pcapPath), nameSsid);
     }
 
-    File f = SD.open(pcapPath, "r");
+    File f = LittleFS.open(pcapPath, "r");
     if (!f) return 0;
     uint8_t fh[24];
     if (f.read(fh, 24) != 24) {

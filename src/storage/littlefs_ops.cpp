@@ -1,7 +1,6 @@
 #include "littlefs_ops.h"
 #include "../net/ap_sta.h"
 #include "../cap/capture_name.h"
-#include <SPI.h>
 #include <string.h>
 #include <strings.h>
 #include <esp_random.h>
@@ -11,7 +10,6 @@
 namespace Storage {
 
 static bool s_mounted = false;
-static SPIClass s_sdSPI(FSPI);
 static SemaphoreHandle_t s_sdMux = nullptr;
 
 static void lockSd() {
@@ -22,11 +20,6 @@ static void lockSd() {
 static void unlockSd() {
     if (s_sdMux) xSemaphoreGive(s_sdMux);
 }
-
-static constexpr int SD_CS_PIN   = 12;
-static constexpr int SD_MOSI_PIN = 14;
-static constexpr int SD_MISO_PIN = 39;
-static constexpr int SD_SCK_PIN  = 40;
 
 const char* baseName(const char* path) {
     if (!path || !path[0]) return "";
@@ -43,7 +36,7 @@ static void copyName(const char* src, char* dst, size_t dstLen) {
 static uint16_t countFiles(const char* dir) {
     uint16_t n = 0;
     if (!s_mounted) return 0;
-    File root = SD.open(dir);
+    File root = LittleFS.open(dir);
     if (!root || !root.isDirectory()) {
         if (root) root.close();
         return 0;
@@ -61,7 +54,7 @@ static uint16_t countFiles(const char* dir) {
 static uint16_t listDir(const char* dir, char out[][FILE_NAME_MAX], uint16_t max) {
     uint16_t n = 0;
     if (!s_mounted) return 0;
-    File root = SD.open(dir);
+    File root = LittleFS.open(dir);
     if (!root || !root.isDirectory()) {
         if (root) root.close();
         return 0;
@@ -79,15 +72,6 @@ static uint16_t listDir(const char* dir, char out[][FILE_NAME_MAX], uint16_t max
     return n;
 }
 
-static void prepareBus() {
-    pinMode(5, OUTPUT);
-    digitalWrite(5, HIGH);
-    pinMode(SD_CS_PIN, OUTPUT);
-    digitalWrite(SD_CS_PIN, HIGH);
-    s_sdSPI.begin(SD_SCK_PIN, SD_MISO_PIN, SD_MOSI_PIN, SD_CS_PIN);
-    delay(20);
-}
-
 bool begin() {
     lockSd();
     if (s_mounted) {
@@ -95,42 +79,36 @@ bool begin() {
         return true;
     }
 
-    pinMode(5, OUTPUT);
-    digitalWrite(5, HIGH);
-    prepareBus();
-
-    const uint32_t speeds[] = {25000000, 20000000, 10000000, 8000000, 4000000, 1000000};
-    for (uint8_t i = 0; i < 6 && !s_mounted; i++) {
-        if (i > 0) {
-            SD.end();
-            delay(80);
-            prepareBus();
+    if (!LittleFS.begin(true)) {
+        Serial.println("[LittleFS] mount failed, formatting...");
+        if (!LittleFS.format()) {
+            Serial.println("[LittleFS] format failed");
+            unlockSd();
+            return false;
         }
-        if (SD.begin(SD_CS_PIN, s_sdSPI, speeds[i])) {
-            Serial.printf("[SD] mounted %luMHz\n", speeds[i] / 1000000UL);
-            s_mounted = true;
+        if (!LittleFS.begin(true)) {
+            Serial.println("[LittleFS] mount failed after format");
+            unlockSd();
+            return false;
         }
     }
 
-    if (!s_mounted) {
-        Serial.println("[SD] mount failed");
-        unlockSd();
-        return false;
-    }
+    Serial.println("[LittleFS] mounted");
+    s_mounted = true;
 
-    SD.mkdir(DIR_ROOT);
-    SD.mkdir(DIR_HS);
-    SD.mkdir(DIR_WPASEC);
-    SD.mkdir(DIR_PWNCRACK);
-    SD.mkdir(DIR_OHC);
-    SD.mkdir(DIR_EVILPIG);
-    SD.mkdir(DIR_PIGPASS);
-    SD.mkdir(DIR_PASSWORLD);
-    SD.mkdir(DIR_IR);
-    SD.mkdir(DIR_WOLF);
-    SD.mkdir(DIR_TALK);
-    SD.mkdir(DIR_MUSIC);
-    SD.mkdir(DIR_INSPECTOR);
+    LittleFS.mkdir(DIR_ROOT);
+    LittleFS.mkdir(DIR_HS);
+    LittleFS.mkdir(DIR_WPASEC);
+    LittleFS.mkdir(DIR_PWNCRACK);
+    LittleFS.mkdir(DIR_OHC);
+    LittleFS.mkdir(DIR_EVILPIG);
+    LittleFS.mkdir(DIR_PIGPASS);
+    LittleFS.mkdir(DIR_PASSWORLD);
+    LittleFS.mkdir(DIR_IR);
+    LittleFS.mkdir(DIR_WOLF);
+    LittleFS.mkdir(DIR_TALK);
+    LittleFS.mkdir(DIR_MUSIC);
+    LittleFS.mkdir(DIR_INSPECTOR);
     migrateLegacy();
     unlockSd();
     return true;
@@ -142,9 +120,9 @@ void end() {
         unlockSd();
         return;
     }
-    SD.end();
+    LittleFS.end();
     s_mounted = false;
-    Serial.println("[SD] released");
+    Serial.println("[LittleFS] released");
     unlockSd();
 }
 
@@ -154,45 +132,23 @@ bool remount() {
     return begin();
 }
 
-uint32_t sectorSize() {
-    if (!s_mounted) return 0;
-    uint32_t n = SD.sectorSize();
-    return n ? n : 512;
-}
-
-uint32_t numSectors() {
-    if (!s_mounted) return 0;
-    return SD.numSectors();
-}
-
-bool readSector(uint32_t lba, uint8_t* buf) {
-    if (!s_mounted || !buf) return false;
-    lockSd();
-    bool ok = SD.readRAW(buf, lba);
-    unlockSd();
-    return ok;
-}
-
-bool writeSector(uint32_t lba, const uint8_t* buf) {
-    if (!s_mounted || !buf) return false;
-    lockSd();
-    bool ok = SD.writeRAW(const_cast<uint8_t*>(buf), lba);
-    unlockSd();
-    return ok;
-}
+uint32_t sectorSize() { return 512; }
+uint32_t numSectors() { return 0; }
+bool readSector(uint32_t lba, uint8_t* buf) { (void)lba; (void)buf; return false; }
+bool writeSector(uint32_t lba, const uint8_t* buf) { (void)lba; (void)buf; return false; }
 
 bool available() { return s_mounted; }
 
 bool ensureDir(const char* path) {
     if (!s_mounted || !path) return false;
-    if (SD.exists(path)) {
-        File f = SD.open(path);
+    if (LittleFS.exists(path)) {
+        File f = LittleFS.open(path);
         bool ok = f && f.isDirectory();
         if (f) f.close();
         if (ok) return true;
     }
-    if (SD.mkdir(path)) return true;
-    File f = SD.open(path, "r");
+    if (LittleFS.mkdir(path)) return true;
+    File f = LittleFS.open(path, "r");
     bool ok = f && f.isDirectory();
     if (f) f.close();
     return ok;
@@ -200,17 +156,17 @@ bool ensureDir(const char* path) {
 
 bool removeFile(const char* path) {
     if (!s_mounted || !path) return false;
-    return SD.remove(path);
+    return LittleFS.remove(path);
 }
 
 bool fileExists(const char* path) {
     if (!s_mounted || !path) return false;
-    return SD.exists(path);
+    return LittleFS.exists(path);
 }
 
 size_t fileSize(const char* path) {
     if (!s_mounted || !path) return 0;
-    File f = SD.open(path, "r");
+    File f = LittleFS.open(path, "r");
     if (!f) return 0;
     size_t n = f.size();
     f.close();
@@ -220,8 +176,8 @@ size_t fileSize(const char* path) {
 Stats stats() {
     Stats s{};
     if (!s_mounted) return s;
-    s.total = SD.totalBytes();
-    s.used  = SD.usedBytes();
+    s.total = LittleFS.totalBytes();
+    s.used  = LittleFS.usedBytes();
     s.free  = (s.total > s.used) ? (s.total - s.used) : 0;
     s.handshakes = countFiles(DIR_HS);
     s.results = countFiles(DIR_WPASEC) + countFiles(DIR_PWNCRACK);
@@ -230,7 +186,7 @@ Stats stats() {
 
 uint16_t forEachInDir(const char* dir, FileVisitor fn, void* ctx) {
     if (!s_mounted || !fn || !dir) return 0;
-    File root = SD.open(dir);
+    File root = LittleFS.open(dir);
     if (!root || !root.isDirectory()) {
         if (root) root.close();
         return 0;
@@ -293,17 +249,17 @@ static bool moveInto(const char* fromPath, const char* toDir) {
     char dest[96];
     snprintf(dest, sizeof(dest), "%s/%s", toDir, name);
     if (strcmp(fromPath, dest) == 0) return true;
-    if (SD.exists(dest)) {
-        Serial.printf("[SD] keep %s (already in loot)\n", name);
+    if (LittleFS.exists(dest)) {
+        Serial.printf("[LittleFS] keep %s (already in loot)\n", name);
         return true;
     }
-    if (SD.rename(fromPath, dest)) {
-        Serial.printf("[SD] moved %s -> %s\n", fromPath, dest);
+    if (LittleFS.rename(fromPath, dest)) {
+        Serial.printf("[LittleFS] moved %s -> %s\n", fromPath, dest);
         return true;
     }
-    File in = SD.open(fromPath, "r");
+    File in = LittleFS.open(fromPath, "r");
     if (!in) return false;
-    File out = SD.open(dest, "w");
+    File out = LittleFS.open(dest, "w");
     if (!out) {
         in.close();
         return false;
@@ -317,13 +273,13 @@ static bool moveInto(const char* fromPath, const char* toDir) {
     }
     in.close();
     out.close();
-    SD.remove(fromPath);
-    Serial.printf("[SD] copied %s -> %s\n", fromPath, dest);
+    LittleFS.remove(fromPath);
+    Serial.printf("[LittleFS] copied %s -> %s\n", fromPath, dest);
     return true;
 }
 
 static void migrateDirByExt(const char* from) {
-    File root = SD.open(from);
+    File root = LittleFS.open(from);
     if (!root || !root.isDirectory()) {
         if (root) root.close();
         return;
@@ -348,7 +304,7 @@ static void migrateDirByExt(const char* from) {
 }
 
 static void migrateAll(const char* from, const char* toDir) {
-    File root = SD.open(from);
+    File root = LittleFS.open(from);
     if (!root || !root.isDirectory()) {
         if (root) root.close();
         return;
@@ -369,7 +325,7 @@ static void migrateAll(const char* from, const char* toDir) {
 }
 
 static void splitCapturesOut(const char* from) {
-    File root = SD.open(from);
+    File root = LittleFS.open(from);
     if (!root || !root.isDirectory()) {
         if (root) root.close();
         return;
@@ -392,7 +348,7 @@ static void splitCapturesOut(const char* from) {
 
 static void wipeHsCompanionTxt() {
     for (uint8_t pass = 0; pass < 8; pass++) {
-        File root = SD.open(DIR_HS);
+        File root = LittleFS.open(DIR_HS);
         if (!root || !root.isDirectory()) {
             if (root) root.close();
             return;
@@ -418,7 +374,7 @@ static void wipeHsCompanionTxt() {
         for (uint8_t i = 0; i < n; i++) {
             char path[96];
             snprintf(path, sizeof(path), "%s/%s", DIR_HS, names[i]);
-            SD.remove(path);
+            LittleFS.remove(path);
         }
     }
 }
@@ -437,30 +393,29 @@ void migrateLegacy() {
     migrateAll("/loot/Passworld", DIR_PASSWORLD);
     splitCapturesOut(DIR_WPASEC);
     splitCapturesOut(DIR_PWNCRACK);
-    if (!SD.exists(FILE_WPASEC_KEY) && SD.exists("/0N3P0rK/wpa-sec/wpasec_key.txt"))
-        SD.rename("/0N3P0rK/wpa-sec/wpasec_key.txt", FILE_WPASEC_KEY);
-    if (!SD.exists(FILE_WPASEC_RESULTS) && SD.exists("/0N3P0rK/wpa-sec/wpasec_results.txt"))
-        SD.rename("/0N3P0rK/wpa-sec/wpasec_results.txt", FILE_WPASEC_RESULTS);
-    if (!SD.exists(FILE_WPASEC_UPLOADED) && SD.exists("/0N3P0rK/wpa-sec/wpasec_uploaded.txt"))
-        SD.rename("/0N3P0rK/wpa-sec/wpasec_uploaded.txt", FILE_WPASEC_UPLOADED);
+    if (!LittleFS.exists(FILE_WPASEC_KEY) && LittleFS.exists("/0N3P0rK/wpa-sec/wpasec_key.txt"))
+        LittleFS.rename("/0N3P0rK/wpa-sec/wpasec_key.txt", FILE_WPASEC_KEY);
+    if (!LittleFS.exists(FILE_WPASEC_RESULTS) && LittleFS.exists("/0N3P0rK/wpa-sec/wpasec_results.txt"))
+        LittleFS.rename("/0N3P0rK/wpa-sec/wpasec_results.txt", FILE_WPASEC_RESULTS);
+    if (!LittleFS.exists(FILE_WPASEC_UPLOADED) && LittleFS.exists("/0N3P0rK/wpa-sec/wpasec_uploaded.txt"))
+        LittleFS.rename("/0N3P0rK/wpa-sec/wpasec_uploaded.txt", FILE_WPASEC_UPLOADED);
     wipeHsCompanionTxt();
 }
 
 bool formatStorage() {
-    return false;
+    return LittleFS.format();
 }
 
 bool loadKeyFile(const char* path, char* dest, size_t destLen) {
     if (!s_mounted || !path || !dest || destLen < 2) return false;
-    if (!SD.exists(path)) return false;
-    File f = SD.open(path, "r");
+    if (!LittleFS.exists(path)) return false;
+    File f = LittleFS.open(path, "r");
     if (!f) return false;
     size_t n = f.readBytes(dest, destLen - 1);
     f.close();
     dest[n] = '\0';
     while (n > 0 && (dest[n - 1] == '\n' || dest[n - 1] == '\r' || dest[n - 1] == ' '))
         dest[--n] = '\0';
-    // WPA-SEC wants 32 hex. Pull that run out of "key: abcd..." lines.
     if (n != 32) {
         int run = 0, start = -1;
         for (size_t i = 0; dest[i]; i++) {
@@ -508,20 +463,17 @@ void loadKeysIntoNet() {
     for (uint8_t i = 0; wpaKeys[i]; i++) {
         if (loadKeyFile(wpaKeys[i], buf, sizeof(buf))) {
             Net::setWpaSecKey(buf);
-            Serial.println("[SD] wpasec key loaded");
+            Serial.println("[LittleFS] wpasec key loaded");
             break;
         }
     }
     if (loadKeyFile(FILE_PWNCRACK_KEY, buf, sizeof(buf))) {
         Net::setPwncrackKey(buf);
-        Serial.println("[SD] pwncrack key loaded");
+        Serial.println("[LittleFS] pwncrack key loaded");
     }
-    // OnlineHashCrack takes the account email instead of an API key. Do NOT
-    // reuse loadKeyFile() here: that helper pulls a 32-hex run for WPA-SEC
-    // and would mangle an address whose local-part looks like hex.
     char mail[80];
-    if (s_mounted && SD.exists(FILE_OHC_EMAIL)) {
-        File ef = SD.open(FILE_OHC_EMAIL, "r");
+    if (s_mounted && LittleFS.exists(FILE_OHC_EMAIL)) {
+        File ef = LittleFS.open(FILE_OHC_EMAIL, "r");
         if (ef) {
             size_t n = ef.readBytes(mail, sizeof(mail) - 1);
             ef.close();
@@ -529,8 +481,8 @@ void loadKeysIntoNet() {
             while (n > 0 && (mail[n - 1] == '\n' || mail[n - 1] == '\r' || mail[n - 1] == ' '))
                 mail[--n] = '\0';
             if (mail[0]) {
-                if (Net::setOhcEmail(mail)) Serial.println("[SD] ohc email loaded");
-                else Serial.println("[SD] ohc email invalid, ignored");
+                if (Net::setOhcEmail(mail)) Serial.println("[LittleFS] ohc email loaded");
+                else Serial.println("[LittleFS] ohc email invalid, ignored");
             }
         }
     }
@@ -538,8 +490,8 @@ void loadKeysIntoNet() {
 
 static bool moveLootFile(const char* from, const char* to) {
     if (!from || !to || !from[0] || !to[0]) return false;
-    if (SD.exists(to)) SD.remove(to);
-    if (SD.rename(from, to)) return true;
+    if (LittleFS.exists(to)) LittleFS.remove(to);
+    if (LittleFS.rename(from, to)) return true;
     return false;
 }
 
@@ -550,7 +502,7 @@ uint8_t eatRandomLoot(uint8_t want) {
     Item list[32];
     uint8_t n = 0;
     auto collect = [&](const char* dir) {
-        File root = SD.open(dir);
+        File root = LittleFS.open(dir);
         if (!root || !root.isDirectory()) {
             if (root) root.close();
             return;
@@ -596,7 +548,7 @@ uint8_t restoreWolfLoot() {
     if (!s_mounted) return 0;
     ensureDir(DIR_WOLF);
     ensureDir(DIR_HS);
-    File root = SD.open(DIR_WOLF);
+    File root = LittleFS.open(DIR_WOLF);
     if (!root || !root.isDirectory()) {
         if (root) root.close();
         return 0;
@@ -622,8 +574,8 @@ uint8_t restoreWolfLoot() {
         char dest[96];
         snprintf(src, sizeof(src), "%s/%s", DIR_WOLF, list[i].name);
         snprintf(dest, sizeof(dest), "%s/%s", DIR_HS, list[i].name);
-        if (SD.exists(dest)) {
-            SD.remove(src);
+        if (LittleFS.exists(dest)) {
+            LittleFS.remove(src);
             continue;
         }
         if (moveLootFile(src, dest)) {
@@ -644,7 +596,6 @@ static bool isLootCap(const char* name) {
            endsWithCI(name, ".hc22000");
 }
 
-// pcap family and hash family are different tools — never delete one for the other.
 static uint8_t lootKind(const char* name) {
     if (endsWithCI(name, ".22000") || endsWithCI(name, ".hc22000")) return 1;
     return 0;
@@ -653,10 +604,6 @@ static uint8_t lootKind(const char* name) {
 static int lootScore(const char* name, uint32_t size) {
     bool isHash = endsWithCI(name, ".22000") || endsWithCI(name, ".hc22000");
     if (isHash) {
-        // .22000/.hc22000 are regenerated from scratch every time from
-        // in-memory parsed state (see Hc22000::maybeWrite()) - they don't
-        // accumulate data over time, so which FORMAT variant survives is
-        // a legitimate, purely cosmetic/quality choice here.
         int s = 0;
         if (endsWithCI(name, "_hs.22000")) s += 300;
         else if (endsWithCI(name, ".hc22000")) s += 80;
@@ -667,24 +614,6 @@ static int lootScore(const char* name, uint32_t size) {
         }
         return s;
     }
-    // PCAP family: score is purely size, on purpose. A pcap accumulates
-    // real captured frames over time (M1, M2, M3, M4, retries...) and -
-    // unlike a .22000 hash - can NEVER be regenerated if lost, since the
-    // raw frame bytes only ever live in this file. A bigger pcap for the
-    // same BSSID is always strictly more complete, no matter what its
-    // filename looks like.
-    //
-    // The previous version scored by filename instead (same weights as
-    // the hash branch above): a pcap with a real SSID in its name got up
-    // to a +380 point head start over one still named HIDDEN_..., which
-    // could easily outweigh a 30KB size difference. That turned the
-    // sniffer's own SSID-learn-then-rename race (a HIDDEN_*.pcap getting
-    // M1, then - once the SSID is learned - a fresh, separately-named
-    // file getting M2) into automatic data loss: on every Cap::stop(),
-    // this function would keep the small freshly-renamed fragment and
-    // permanently SD.remove() the older HIDDEN_*.pcap that actually held
-    // the captured frames. Scoring by size alone means the fragment that
-    // actually has more of the handshake in it always wins.
     return (int)size;
 }
 
@@ -696,7 +625,7 @@ static void dropCompanion(const char* dir, const char* name) {
     if (n == 0) return;
     char path[96];
     snprintf(path, sizeof(path), "%s/%.*s.txt", dir, (int)n, base);
-    if (SD.exists(path)) SD.remove(path);
+    if (LittleFS.exists(path)) LittleFS.remove(path);
 }
 
 static uint8_t compactOneDir(const char* dir) {
@@ -708,7 +637,7 @@ static uint8_t compactOneDir(const char* dir) {
     };
     Cand list[48];
     uint8_t n = 0;
-    File root = SD.open(dir);
+    File root = LittleFS.open(dir);
     if (!root || !root.isDirectory()) {
         if (root) root.close();
         return 0;
@@ -758,7 +687,7 @@ static uint8_t compactOneDir(const char* dir) {
             if (j == best) continue;
             char path[96];
             snprintf(path, sizeof(path), "%s/%s", dir, list[j].name);
-            if (SD.remove(path)) {
+            if (LittleFS.remove(path)) {
                 dropCompanion(dir, list[j].name);
                 killed++;
                 Serial.printf("[LOOT] dedup %s\n", list[j].name);
@@ -780,7 +709,7 @@ bool removeCapture(const char* name) {
     const char* base = baseName(name);
     char path[96];
     snprintf(path, sizeof(path), "%s/%s", DIR_HS, base);
-    bool ok = SD.remove(path);
+    bool ok = LittleFS.remove(path);
     dropCompanion(DIR_HS, base);
     return ok;
 }

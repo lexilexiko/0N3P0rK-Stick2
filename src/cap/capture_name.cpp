@@ -1,6 +1,6 @@
 #include "capture_name.h"
 #include "../sync/pot_parse.h"
-#include <SD.h>
+#include <LittleFS.h>
 #include <string.h>
 #include <strings.h>
 #include <stdio.h>
@@ -167,8 +167,8 @@ bool readCompanionSsid(const char* dir, const char* captureName, char ssid[33]) 
     char path[96];
 
     auto tryRead = [&](const char* p) -> bool {
-        if (!SD.exists(p)) return false;
-        File f = SD.open(p, "r");
+        if (!LittleFS.exists(p)) return false;
+        File f = LittleFS.open(p, "r");
         if (!f) return false;
         char buf[34];
         int got = f.readBytesUntil('\n', buf, sizeof(buf) - 1);
@@ -292,7 +292,7 @@ bool metaFrom22000File(const char* dir, const char* name, char hex13[13], char s
     if (!dir || !name) return false;
     char path[96];
     snprintf(path, sizeof(path), "%s/%s", dir, fileBase(name));
-    File f = SD.open(path, "r");
+    File f = LittleFS.open(path, "r");
     if (!f) return false;
     char line[200];
     int n = f.readBytesUntil('\n', line, sizeof(line) - 1);

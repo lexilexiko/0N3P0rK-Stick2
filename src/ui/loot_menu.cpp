@@ -18,7 +18,7 @@
 #include <WiFi.h>
 #include <WiFiClient.h>
 #include <WiFiClientSecure.h>
-#include <SD.h>
+#include <LittleFS.h>
 #include <esp_heap_caps.h>
 #include <string.h>
 #include <ctype.h>
@@ -208,7 +208,7 @@ void LootMenu::scan() {
     else if (tab == Tab::PWNCRACK) Pwncrack::loadCache();
     else OHC::loadCache();
 
-    File root = SD.open(Storage::DIR_HS);
+    File root = LittleFS.open(Storage::DIR_HS);
     if (!root || !root.isDirectory()) {
         if (root) root.close();
         return;
@@ -365,7 +365,7 @@ void LootMenu::countTotal() {
     totalItems = 0;
     if (!Storage::available()) return;
     const bool capture = (tab != Tab::PWNCRACK);
-    File root = SD.open(Storage::DIR_HS);
+    File root = LittleFS.open(Storage::DIR_HS);
     if (!root || !root.isDirectory()) {
         if (root) root.close();
         return;
@@ -895,7 +895,7 @@ void LootMenu::handleInput() {
             reloadList();
             return;
         }
-        // The hook works from the open card too: vet this capture, report to SD.
+        // The hook works from the open card too: vet this capture, report to LittleFS.
         if (inspectKey) {
             runInspector(inspectAll);
             return;
@@ -995,7 +995,7 @@ void LootMenu::update() {
         };
         ioXferClear();
         ioXfer().paint = paintSyncLive;
-        // Page table is ~9KB and the all-files path re-reads names from SD.
+        // Page table is ~9KB and the all-files path re-reads names from LittleFS.
         // Give it back before the TLS arena so the 48KB block can be one piece.
         if (s_oneIdx == 0xFF && s_rows) {
             delete[] s_rows;

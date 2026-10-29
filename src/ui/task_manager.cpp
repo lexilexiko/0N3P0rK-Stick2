@@ -91,8 +91,8 @@ void refreshMemoryStats() {
     s_internalFree = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
     s_sdAvailable = Storage::available();
     if (s_sdAvailable) {
-        size_t total = SD.totalBytes();
-        size_t used = SD.usedBytes();
+        size_t total = LittleFS.totalBytes();
+        size_t used = LittleFS.usedBytes();
         s_sdFree = total > used ? total - used : 0;
     } else {
         s_sdFree = 0;

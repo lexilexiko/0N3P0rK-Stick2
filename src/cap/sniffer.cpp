@@ -19,7 +19,7 @@
 #include <esp_random.h>
 #include <freertos/portmacro.h>  // portENTER_CRITICAL for s_pendingLearn race
 #include <WiFi.h>
-#include <SD.h>
+#include <LittleFS.h>
 #include <string.h>
 #include <stdio.h>
 #include <new>
@@ -217,7 +217,7 @@ static uint32_t s_lockBssidUntil = 0;     // millis() deadline; 0 = not armed
 // repeat EAPOL/M1. Backs the hard cap below.
 static uint32_t s_lockBssidArmedMs = 0;
 
-// Session-only fallback skips; persistent skips are stored separately on SD.
+// Session-only fallback skips; persistent skips are stored separately on LittleFS.
 static const uint8_t SKIP_MAX = 16;
 static uint8_t s_skipList[SKIP_MAX][6];
 static uint8_t s_skipN = 0;
@@ -300,20 +300,20 @@ static void loadStoredSkips() {
         return;
     }
     s_storedSkipCount = 0;
-    if (!SD.exists(Storage::FILE_RADIO_SKIP) && SD.exists(SKIP_BAK_PATH)) {
-        if (!SD.rename(SKIP_BAK_PATH, Storage::FILE_RADIO_SKIP)) {
+    if (!LittleFS.exists(Storage::FILE_RADIO_SKIP) && LittleFS.exists(SKIP_BAK_PATH)) {
+        if (!LittleFS.rename(SKIP_BAK_PATH, Storage::FILE_RADIO_SKIP)) {
             s_storedSkipsLoaded = false;
             Serial.println("[CAP] cannot recover persistent radio skip backup");
             return;
         }
-    } else if (SD.exists(Storage::FILE_RADIO_SKIP) && SD.exists(SKIP_BAK_PATH)) {
-        if (!SD.remove(SKIP_BAK_PATH))
+    } else if (LittleFS.exists(Storage::FILE_RADIO_SKIP) && LittleFS.exists(SKIP_BAK_PATH)) {
+        if (!LittleFS.remove(SKIP_BAK_PATH))
             Serial.println("[CAP] stale radio skip backup could not be removed");
     }
-    if (SD.exists(SKIP_TMP_PATH)) SD.remove(SKIP_TMP_PATH);
-    File file = SD.open(Storage::FILE_RADIO_SKIP, FILE_READ);
+    if (LittleFS.exists(SKIP_TMP_PATH)) LittleFS.remove(SKIP_TMP_PATH);
+    File file = LittleFS.open(Storage::FILE_RADIO_SKIP, FILE_READ);
     if (!file) {
-        s_storedSkipsLoaded = !SD.exists(Storage::FILE_RADIO_SKIP);
+        s_storedSkipsLoaded = !LittleFS.exists(Storage::FILE_RADIO_SKIP);
         return;
     }
     char line[96];
@@ -377,8 +377,8 @@ static void loadStoredSkips() {
 
 static bool saveStoredSkips() {
     if (!Storage::available() || !Storage::ensureDir(Storage::DIR_ROOT)) return false;
-    if (SD.exists(SKIP_TMP_PATH) && !SD.remove(SKIP_TMP_PATH)) return false;
-    File file = SD.open(SKIP_TMP_PATH, FILE_WRITE);
+    if (LittleFS.exists(SKIP_TMP_PATH) && !LittleFS.remove(SKIP_TMP_PATH)) return false;
+    File file = LittleFS.open(SKIP_TMP_PATH, FILE_WRITE);
     if (!file) return false;
     bool ok = file.println("#MAC,SKIP,SSID_HEX") > 0;
     for (uint8_t i = 0; ok && i < s_storedSkipCount; i++) {
@@ -399,24 +399,24 @@ static bool saveStoredSkips() {
     file.flush();
     file.close();
     if (!ok) {
-        SD.remove(SKIP_TMP_PATH);
+        LittleFS.remove(SKIP_TMP_PATH);
         return false;
     }
-    const bool hadOriginal = SD.exists(Storage::FILE_RADIO_SKIP);
-    if (SD.exists(SKIP_BAK_PATH) && !SD.remove(SKIP_BAK_PATH)) {
-        SD.remove(SKIP_TMP_PATH);
+    const bool hadOriginal = LittleFS.exists(Storage::FILE_RADIO_SKIP);
+    if (LittleFS.exists(SKIP_BAK_PATH) && !LittleFS.remove(SKIP_BAK_PATH)) {
+        LittleFS.remove(SKIP_TMP_PATH);
         return false;
     }
-    if (hadOriginal && !SD.rename(Storage::FILE_RADIO_SKIP, SKIP_BAK_PATH)) {
-        SD.remove(SKIP_TMP_PATH);
+    if (hadOriginal && !LittleFS.rename(Storage::FILE_RADIO_SKIP, SKIP_BAK_PATH)) {
+        LittleFS.remove(SKIP_TMP_PATH);
         return false;
     }
-    if (!SD.rename(SKIP_TMP_PATH, Storage::FILE_RADIO_SKIP)) {
-        if (hadOriginal) SD.rename(SKIP_BAK_PATH, Storage::FILE_RADIO_SKIP);
-        SD.remove(SKIP_TMP_PATH);
+    if (!LittleFS.rename(SKIP_TMP_PATH, Storage::FILE_RADIO_SKIP)) {
+        if (hadOriginal) LittleFS.rename(SKIP_BAK_PATH, Storage::FILE_RADIO_SKIP);
+        LittleFS.remove(SKIP_TMP_PATH);
         return false;
     }
-    if (hadOriginal) SD.remove(SKIP_BAK_PATH);
+    if (hadOriginal) LittleFS.remove(SKIP_BAK_PATH);
     return true;
 }
 
@@ -1035,8 +1035,8 @@ static void makeFilename(const uint8_t* bssid, char out[Storage::FILE_NAME_MAX])
 // Never overwrites an existing preferred file that already has data.
 static void migrateLegacyPcapName(const uint8_t* bssid, const char* preferredPath) {
     if (!bssid || !preferredPath) return;
-    if (SD.exists(preferredPath)) {
-        File p = SD.open(preferredPath, "r");
+    if (LittleFS.exists(preferredPath)) {
+        File p = LittleFS.open(preferredPath, "r");
         size_t sz = p ? p.size() : 0;
         if (p) p.close();
         if (sz >= sizeof(Pcap::FileHeader)) return; // preferred already good
@@ -1049,9 +1049,9 @@ static void migrateLegacyPcapName(const uint8_t* bssid, const char* preferredPat
     char bestPath[80] = {0};
 
     auto consider = [&](const char* path) {
-        if (!path || !path[0] || !SD.exists(path)) return;
+        if (!path || !path[0] || !LittleFS.exists(path)) return;
         if (strcmp(path, preferredPath) == 0) return;
-        File f = SD.open(path, "r");
+        File f = LittleFS.open(path, "r");
         size_t sz = f ? f.size() : 0;
         if (f) f.close();
         if (sz > bestSz) {
@@ -1076,16 +1076,16 @@ static void migrateLegacyPcapName(const uint8_t* bssid, const char* preferredPat
     consider(legPath);
 
     if (!bestPath[0] || bestSz == 0) return;
-    if (SD.exists(preferredPath)) {
+    if (LittleFS.exists(preferredPath)) {
         // preferred exists but was tiny/corrupt path вЂ” don't clobber with rename
-        File p = SD.open(preferredPath, "r");
+        File p = LittleFS.open(preferredPath, "r");
         size_t psz = p ? p.size() : 0;
         if (p) p.close();
         if (psz >= sizeof(Pcap::FileHeader)) return;
-        if (psz > 0 && psz < sizeof(Pcap::FileHeader)) SD.remove(preferredPath);
+        if (psz > 0 && psz < sizeof(Pcap::FileHeader)) LittleFS.remove(preferredPath);
         else if (psz >= sizeof(Pcap::FileHeader)) return;
     }
-    if (SD.rename(bestPath, preferredPath)) {
+    if (LittleFS.rename(bestPath, preferredPath)) {
         Serial.printf("[CAP] migrate pcap -> %s (%u bytes)\n",
                       Storage::baseName(preferredPath), (unsigned)bestSz);
     }
@@ -1345,14 +1345,14 @@ static bool openFileForBssid(const uint8_t* bssid) {
     // Fold legacy SSID_/HIDDEN_ names into stable MAC-only path once.
     migrateLegacyPcapName(bssid, path);
 
-    bool exists = SD.exists(path);
+    bool exists = LittleFS.exists(path);
     // Probe size BEFORE any write open. Append-only for existing captures
     // (Bruce: never FILE_WRITE-truncate a handshake pcap).
     // Tiny (< global header) files are corrupt remnants вЂ” only those may be
     // removed. Anything with a full header is sacred: append or refuse.
     size_t preSize = 0;
     if (exists) {
-        File probe = SD.open(path, "r");
+        File probe = LittleFS.open(path, "r");
         if (!probe) {
             Serial.printf("[CAP] cannot inspect existing pcap, refusing capture: %s\n", name);
             return false;
@@ -1365,7 +1365,7 @@ static bool openFileForBssid(const uint8_t* bssid) {
         probe.close();
         if (preSize > 0 && preSize < sizeof(Pcap::FileHeader)) {
             Serial.printf("[CAP] removed corrupt %u-byte pcap: %s\n", (unsigned)preSize, name);
-            SD.remove(path);
+            LittleFS.remove(path);
             exists = false;
             preSize = 0;
         } else if (preSize >= sizeof(Pcap::FileHeader) && !appendable) {
@@ -1385,7 +1385,7 @@ static bool openFileForBssid(const uint8_t* bssid) {
     }
 
     // Explicit append. Never "w" / FILE_WRITE (truncates on ESP32 SD).
-    s_file = SD.open(path, "a");
+    s_file = LittleFS.open(path, "a");
     if (!s_file) return false;
 
     s_fileSize = s_file.size();
@@ -1435,11 +1435,11 @@ static bool openFileForBssid(const uint8_t* bssid) {
         if (s_file.write((uint8_t*)&fh, sizeof(fh)) != sizeof(fh)) {
             closeFile();
             // Only remove if we created an empty/new failure вЂ” not a prior good file.
-            if (SD.exists(path)) {
-                File chk = SD.open(path, "r");
+            if (LittleFS.exists(path)) {
+                File chk = LittleFS.open(path, "r");
                 size_t cz = chk ? chk.size() : 0;
                 if (chk) chk.close();
-                if (cz < sizeof(Pcap::FileHeader)) SD.remove(path);
+                if (cz < sizeof(Pcap::FileHeader)) LittleFS.remove(path);
             }
             return false;
         }
@@ -1820,7 +1820,7 @@ static void processPendingSsidLearn() {
     CapName::buildStem("", bssid, hiddenStem, sizeof(hiddenStem));
     snprintf(hiddenName, sizeof(hiddenName), "%s.pcap", hiddenStem);
     snprintf(hiddenPath, sizeof(hiddenPath), "%s%s", PREFIX, hiddenName);
-    if (!SD.exists(hiddenPath)) return; // nothing was ever written under HIDDEN
+    if (!LittleFS.exists(hiddenPath)) return; // nothing was ever written under HIDDEN
 
     // Same file we're actively streaming into вЂ” close it before renaming.
     if (s_fileOpen && sameBssid(s_fileBssid, bssid)) closeFile();
@@ -1829,9 +1829,9 @@ static void processPendingSsidLearn() {
     makeFilename(bssid, newName);
     snprintf(newPath, sizeof(newPath), "%s%s", PREFIX, newName);
     if (strcmp(hiddenPath, newPath) == 0) return; // name didn't actually change
-    if (SD.exists(newPath)) return;               // don't clobber an existing file
+    if (LittleFS.exists(newPath)) return;               // don't clobber an existing file
 
-    if (!SD.rename(hiddenPath, newPath)) {
+    if (!LittleFS.rename(hiddenPath, newPath)) {
         Serial.printf("[CAP] rename %s -> %s failed\n", hiddenName, newName);
         return;
     }
@@ -1840,7 +1840,7 @@ static void processPendingSsidLearn() {
     // Splice the SSID-revealing frame into the renamed pcap. Without this,
     // Hc22000::convertPcap() run later on this file would still see nothing
     // but the original hidden beacon and could never rebuild a crackable hash.
-    File f = SD.open(newPath, "a");
+    File f = LittleFS.open(newPath, "a");
     if (!f) return;
     uint8_t rt[Pcap::RADIOTAP_FAT_LEN];
     uint8_t rtLen = Pcap::buildRadiotap(rt, beacon.channel, beacon.rssi, s_fatPcap);

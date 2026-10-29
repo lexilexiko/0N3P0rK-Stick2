@@ -387,7 +387,7 @@ static bool runScriptFile(const char* name) {
         snprintf(s_lastErr, sizeof(s_lastErr), "missing %s", name);
         return false;
     }
-    File f = SD.open(path, FILE_READ);
+    File f = LittleFS.open(path, FILE_READ);
     if (!f) {
         strncpy(s_lastErr, "open fail", sizeof(s_lastErr) - 1);
         return false;

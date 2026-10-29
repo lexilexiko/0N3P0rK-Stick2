@@ -1,6 +1,6 @@
 #pragma once
 #include <Arduino.h>
-#include <SD.h>
+#include <LittleFS.h>
 
 namespace SDLayout {
 inline bool usingNewLayout() { return true; }
@@ -19,19 +19,19 @@ inline const char* screenshotsDir() { return "/0N3P0rK/screenshots"; }
 inline const char* inspectorDir() { return "/0N3P0rK/inspector"; }
 
 inline void ensureDirs() {
-    SD.mkdir("/0N3P0rK");
-    SD.mkdir("/0N3P0rK/handshakes");
-    SD.mkdir("/0N3P0rK/wpa-sec");
-    SD.mkdir("/0N3P0rK/pwncrack");
-    SD.mkdir("/0N3P0rK/ohc");
-    SD.mkdir("/0N3P0rK/inspector");
-    SD.mkdir("/0N3P0rK/pigpass");
-    SD.mkdir("/0N3P0rK/Passworld");
-    SD.mkdir("/0N3P0rK/evilpig");
-    SD.mkdir("/0N3P0rK/ir");
-    SD.mkdir("/0N3P0rK/wolf");
-    SD.mkdir("/0N3P0rK/talk");
-    SD.mkdir("/0N3P0rK/music");
-    SD.mkdir("/0N3P0rK/screenshots");
+    LittleFS.mkdir("/0N3P0rK");
+    LittleFS.mkdir("/0N3P0rK/handshakes");
+    LittleFS.mkdir("/0N3P0rK/wpa-sec");
+    LittleFS.mkdir("/0N3P0rK/pwncrack");
+    LittleFS.mkdir("/0N3P0rK/ohc");
+    LittleFS.mkdir("/0N3P0rK/inspector");
+    LittleFS.mkdir("/0N3P0rK/pigpass");
+    LittleFS.mkdir("/0N3P0rK/Passworld");
+    LittleFS.mkdir("/0N3P0rK/evilpig");
+    LittleFS.mkdir("/0N3P0rK/ir");
+    LittleFS.mkdir("/0N3P0rK/wolf");
+    LittleFS.mkdir("/0N3P0rK/talk");
+    LittleFS.mkdir("/0N3P0rK/music");
+    LittleFS.mkdir("/0N3P0rK/screenshots");
 }
 }

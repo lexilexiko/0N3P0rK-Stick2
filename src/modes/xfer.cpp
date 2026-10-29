@@ -10,7 +10,7 @@
 #include <M5Unified.h>
 #include <WiFi.h>
 #include <WebServer.h>
-#include <SD.h>
+#include <LittleFS.h>
 #include <string.h>
 #include <stdio.h>
 
@@ -81,11 +81,11 @@ static void handleList() {
         s_srv->send(400, "text/plain", "bad path");
         return;
     }
-    if (!SD.exists(path)) {
+    if (!LittleFS.exists(path)) {
         s_srv->send(404, "text/plain", "not found");
         return;
     }
-    File dir = SD.open(path);
+    File dir = LittleFS.open(path);
     if (!dir || !dir.isDirectory()) {
         s_srv->send(400, "text/plain", "not a dir");
         return;
@@ -132,11 +132,11 @@ static void handleDownload() {
         s_srv->send(400, "text/plain", "bad path");
         return;
     }
-    if (!SD.exists(path)) {
+    if (!LittleFS.exists(path)) {
         s_srv->send(404, "text/plain", "missing");
         return;
     }
-    File f = SD.open(path, FILE_READ);
+    File f = LittleFS.open(path, FILE_READ);
     if (!f || f.isDirectory()) {
         s_srv->send(400, "text/plain", "not a file");
         return;
@@ -157,12 +157,12 @@ static void handleDelete() {
         return;
     }
     bool ok = false;
-    if (SD.exists(path)) {
-        File f = SD.open(path);
+    if (LittleFS.exists(path)) {
+        File f = LittleFS.open(path);
         bool isDir = f && f.isDirectory();
         f.close();
-        if (isDir) ok = SD.rmdir(path);
-        else ok = SD.remove(path);
+        if (isDir) ok = LittleFS.rmdir(path);
+        else ok = LittleFS.remove(path);
     }
     s_srv->send(ok ? 200 : 500, "text/plain", ok ? "ok" : "fail");
 }
@@ -183,8 +183,8 @@ static void handleUpload() {
             s_uploadPath = "";
             return;
         }
-        if (SD.exists(s_uploadPath)) SD.remove(s_uploadPath);
-        s_upload = SD.open(s_uploadPath, FILE_WRITE);
+        if (LittleFS.exists(s_uploadPath)) LittleFS.remove(s_uploadPath);
+        s_upload = LittleFS.open(s_uploadPath, FILE_WRITE);
         setStatus("uploading...");
     } else if (up.status == UPLOAD_FILE_WRITE) {
         if (s_upload) s_upload.write(up.buf, up.currentSize);

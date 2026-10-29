@@ -4,7 +4,7 @@
 
 #include "evilpig.h"
 #include <M5Unified.h>
-#include <SD.h>
+#include <LittleFS.h>
 #include <esp_heap_caps.h>
 #include <esp_wifi.h>
 #include <string.h>
@@ -474,8 +474,8 @@ void EvilPigMode::pushCatch(const char* ssid, const String& password, uint8_t ch
 void EvilPigMode::loadCatchesFromSd() {
     if (!Config::isSDAvailable()) return;
     const char* path = SDLayout::evilpigCredsPath();
-    if (!SD.exists(path)) return;
-    File f = SD.open(path, FILE_READ);
+    if (!LittleFS.exists(path)) return;
+    File f = LittleFS.open(path, FILE_READ);
     if (!f) return;
     // Read last lines into buffer (simple: scan all, keep last MAX_CATCH)
     catchCount = 0;
@@ -550,8 +550,8 @@ void EvilPigMode::saveSubmission(const String& password) {
     if (!Config::isSDAvailable()) return;
     SDLayout::ensureDirs();
     const char* path = SDLayout::evilpigCredsPath();
-    bool needHeader = !SD.exists(path);
-    File f = SD.open(path, FILE_APPEND);
+    bool needHeader = !LittleFS.exists(path);
+    File f = LittleFS.open(path, FILE_APPEND);
     if (!f) return;
     if (needHeader) f.println("ts_ms,ap_ssid,bssid,channel,password");
     String safe = password;

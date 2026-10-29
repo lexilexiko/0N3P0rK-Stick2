@@ -9,7 +9,7 @@
 #include <WiFi.h>
 #include <WiFiClient.h>
 #include <WiFiClientSecure.h>
-#include <SD.h>
+#include <LittleFS.h>
 #include <ctype.h>
 #include <string.h>
 #include <strings.h>
@@ -113,7 +113,7 @@ void Pwncrack::freeCacheMemory() {
 bool Pwncrack::loadUploadedList() {
     uploadedCache.clear();
     if (!Storage::fileExists(Storage::FILE_PWNCRACK_UPLOADED)) return true;
-    File f = SD.open(Storage::FILE_PWNCRACK_UPLOADED, "r");
+    File f = LittleFS.open(Storage::FILE_PWNCRACK_UPLOADED, "r");
     if (!f) return false;
     char line[64];
     while (f.available() && uploadedCache.size() < PWN_MAX_CACHE) {
@@ -132,16 +132,16 @@ bool Pwncrack::loadUploadedList() {
 bool Pwncrack::saveUploadedList() {
     Storage::ensureDir(Storage::DIR_PWNCRACK);
     const char* tmp = "/0N3P0rK/pwncrack/uploaded.tmp";
-    File f = SD.open(tmp, "w");
+    File f = LittleFS.open(tmp, "w");
     if (!f) return false;
     for (const auto& e : uploadedCache) {
         if (e.id[0]) f.println(e.id);
     }
     f.flush();
     f.close();
-    SD.remove(Storage::FILE_PWNCRACK_UPLOADED);
-    if (!SD.rename(tmp, Storage::FILE_PWNCRACK_UPLOADED)) {
-        SD.remove(tmp);
+    LittleFS.remove(Storage::FILE_PWNCRACK_UPLOADED);
+    if (!LittleFS.rename(tmp, Storage::FILE_PWNCRACK_UPLOADED)) {
+        LittleFS.remove(tmp);
         return false;
     }
     Serial.printf("[PWNCRACK] saved %u uploaded\n", (unsigned)uploadedCache.size());
@@ -154,7 +154,7 @@ bool Pwncrack::loadCache() {
     loadUploadedList();
 
     if (Storage::fileExists(Storage::FILE_PWNCRACK_RESULTS)) {
-        File f = SD.open(Storage::FILE_PWNCRACK_RESULTS, "r");
+        File f = LittleFS.open(Storage::FILE_PWNCRACK_RESULTS, "r");
         if (f) {
             static char line[1024];
             while (f.available() && crackedCache.size() < PWN_MAX_CACHE) {
@@ -284,7 +284,7 @@ void Pwncrack::markAsUploaded(const char* filename) {
 
 bool Pwncrack::uploadFile(const char* filepath, const char* apiKey) {
     if (!filepath || !apiKey) return false;
-    File capFile = SD.open(filepath, "r");
+    File capFile = LittleFS.open(filepath, "r");
     if (!capFile) {
         snprintf(lastError, sizeof(lastError), "open fail");
         return false;
@@ -484,7 +484,7 @@ bool Pwncrack::downloadPotfile(const char* apiKey, uint16_t& newCracks) {
 
     Storage::ensureDir(Storage::DIR_PWNCRACK);
     const char* potTmp = "/0N3P0rK/pwncrack/results.tmp";
-    File out = SD.open(potTmp, "w");
+    File out = LittleFS.open(potTmp, "w");
     if (!out) {
         if (useTls) tls.stop(); else plain.stop();
         snprintf(lastError, sizeof(lastError), "pot save");
@@ -537,23 +537,23 @@ bool Pwncrack::downloadPotfile(const char* apiKey, uint16_t& newCracks) {
     if (useTls) tls.stop(); else plain.stop();
 
     if (!headersDone || !statusOk) {
-        SD.remove(potTmp);
+        LittleFS.remove(potTmp);
         snprintf(lastError, sizeof(lastError), "pot http");
         return false;
     }
 
     if (looksHtml || body < 4) {
-        SD.remove(potTmp);
+        LittleFS.remove(potTmp);
         snprintf(lastError, sizeof(lastError), looksHtml ? "pot html" : "pot empty");
         Serial.printf("[PWNCRACK] pot rejected: %s (body=%u), keep old\n",
                       lastError, (unsigned)body);
         return false;
     }
-    SD.remove(Storage::FILE_PWNCRACK_RESULTS);
-    if (!SD.rename(potTmp, Storage::FILE_PWNCRACK_RESULTS)) {
+    LittleFS.remove(Storage::FILE_PWNCRACK_RESULTS);
+    if (!LittleFS.rename(potTmp, Storage::FILE_PWNCRACK_RESULTS)) {
         // rename can fail on FAT — copy-by-write fallback
-        File src = SD.open(potTmp, "r");
-        File dst = SD.open(Storage::FILE_PWNCRACK_RESULTS, "w");
+        File src = LittleFS.open(potTmp, "r");
+        File dst = LittleFS.open(Storage::FILE_PWNCRACK_RESULTS, "w");
         bool copied = false;
         if (src && dst) {
             uint8_t buf[512];
@@ -566,7 +566,7 @@ bool Pwncrack::downloadPotfile(const char* apiKey, uint16_t& newCracks) {
         }
         if (src) src.close();
         if (dst) { dst.flush(); dst.close(); }
-        SD.remove(potTmp);
+        LittleFS.remove(potTmp);
         if (!copied) {
             snprintf(lastError, sizeof(lastError), "pot save");
             return false;
@@ -646,8 +646,8 @@ PwncrackSyncResult Pwncrack::syncCaptures(const char* apiKey, PwncrackProgressCa
 
     loadCache();
     Storage::ensureDir(Storage::DIR_PWNCRACK);
-    SD.remove(PWN_PENDING);
-    File pendOut = SD.open(PWN_PENDING, "w");
+    LittleFS.remove(PWN_PENDING);
+    File pendOut = LittleFS.open(PWN_PENDING, "w");
     PwnPendCtx pend{};
     pend.out = pendOut ? &pendOut : nullptr;
     if (pend.out) Storage::forEachPwn(pwnCollect, &pend);
@@ -661,7 +661,7 @@ PwncrackSyncResult Pwncrack::syncCaptures(const char* apiKey, PwncrackProgressCa
     if (cb) cb("Uploading", 0, pend.count);
     ioXferPhase("UPLOAD", 0, pend.count);
     if (pend.count > 0) {
-        File pendIn = SD.open(PWN_PENDING, "r");
+        File pendIn = LittleFS.open(PWN_PENDING, "r");
         uint16_t i = 0;
         char name[64];
         while (pendIn && pendIn.available()) {
@@ -690,7 +690,7 @@ PwncrackSyncResult Pwncrack::syncCaptures(const char* apiKey, PwncrackProgressCa
         }
         if (pendIn) pendIn.close();
     }
-    SD.remove(PWN_PENDING);
+    LittleFS.remove(PWN_PENDING);
     if (result.uploaded > 0) saveUploadedList();
 
     if (cb) cb("Potfile", pend.count, pend.count);

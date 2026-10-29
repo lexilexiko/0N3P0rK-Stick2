@@ -11,7 +11,7 @@
 #include "pigpass.h"
 #include "pigpass_crypto.h"
 #include <M5Unified.h>
-#include <SD.h>
+#include <LittleFS.h>
 #include <string.h>
 #include <ctype.h>
 #include <stdlib.h>
@@ -154,9 +154,9 @@ static bool endsWithIgnoreCase(const char* value, const char* suffix) {
 }
 
 static bool dirHasExtFiles(const char* dirPath, const char* const* exts, size_t extCount) {
-    if (!dirPath || !SD.exists(dirPath)) return false;
+    if (!dirPath || !LittleFS.exists(dirPath)) return false;
 
-    File dir = SD.open(dirPath);
+    File dir = LittleFS.open(dirPath);
     if (!dir || !dir.isDirectory()) {
         if (dir) dir.close();
         return false;
@@ -187,7 +187,7 @@ static bool dirHasExtFiles(const char* dirPath, const char* const* exts, size_t 
 
 static const char* resolveHandshakeDir() {
     const char* preferredDir = SDLayout::handshakesDir();
-    if (!SD.exists(preferredDir)) SD.mkdir(preferredDir);
+    if (!LittleFS.exists(preferredDir)) LittleFS.mkdir(preferredDir);
     return preferredDir;
 }
 
@@ -573,7 +573,7 @@ static bool parse22000Line(const char* line) {
 }
 
 static bool parse22000File(const char* path) {
-    File f = SD.open(path, FILE_READ);
+    File f = LittleFS.open(path, FILE_READ);
     if (!f) {
         Serial.printf("[PIGPASS] ERROR: Cannot open 22000: %s\n", path);
         return false;
@@ -635,7 +635,7 @@ static bool skipBytes(File& f, uint32_t n) {
 }
 
 static bool parsePcapFile(const char* path) {
-    File f = SD.open(path, FILE_READ);
+    File f = LittleFS.open(path, FILE_READ);
     if (!f) {
         Serial.printf("[PIGPASS] ERROR: Cannot open PCAP: %s\n", path);
         return false;
@@ -908,7 +908,7 @@ static bool readNextPassword(char* password, size_t passwordSize) {
 
 static const char* resolvePassworldDir() {
     const char* preferred = SDLayout::passworldDir();
-    if (!SD.exists(preferred)) SD.mkdir(preferred);
+    if (!LittleFS.exists(preferred)) LittleFS.mkdir(preferred);
     return preferred;
 }
 
@@ -926,9 +926,9 @@ void PigpassMode::clearFileList() {
 }
 
 void PigpassMode::scanDirForExt(const char* dirPath, const char* const* exts, size_t extCount) {
-    if (!dirPath || !SD.exists(dirPath) || files.size() >= MAX_FILES) return;
+    if (!dirPath || !LittleFS.exists(dirPath) || files.size() >= MAX_FILES) return;
 
-    File dir = SD.open(dirPath);
+    File dir = LittleFS.open(dirPath);
     if (!dir || !dir.isDirectory()) {
         if (dir) dir.close();
         return;
@@ -1004,10 +1004,10 @@ void PigpassMode::saveLastWordlist(const char* path) {
     if (!path || !path[0] || !Config::isSDAvailable()) return;
     if (strcmp(path, kMaskVirtualPath) == 0) return;
     const char* dir = SDLayout::pigpassDir();
-    if (dir && dir[0] && !SD.exists(dir)) SD.mkdir(dir);
+    if (dir && dir[0] && !LittleFS.exists(dir)) LittleFS.mkdir(dir);
     const char* p = SDLayout::pigpassLastWordlistPath();
     if (!p) return;
-    File f = SD.open(p, FILE_WRITE);
+    File f = LittleFS.open(p, FILE_WRITE);
     if (!f) return;
     f.println(path);
     f.close();
@@ -1018,8 +1018,8 @@ bool PigpassMode::loadLastWordlist(char* out, size_t outLen) {
     out[0] = '\0';
     if (!Config::isSDAvailable()) return false;
     const char* p = SDLayout::pigpassLastWordlistPath();
-    if (!p || !SD.exists(p)) return false;
-    File f = SD.open(p, FILE_READ);
+    if (!p || !LittleFS.exists(p)) return false;
+    File f = LittleFS.open(p, FILE_READ);
     if (!f) return false;
     String line = f.readStringUntil('\n');
     f.close();
@@ -1122,8 +1122,8 @@ void PigpassMode::scanWordlistFiles() {
 
     // Ensure Passworld exists on SD (new layout)
     const char* wlDir = resolvePassworldDir();
-    if (SDLayout::usingNewLayout() && !SD.exists(SDLayout::passworldDir())) {
-        SD.mkdir(SDLayout::passworldDir());
+    if (SDLayout::usingNewLayout() && !LittleFS.exists(SDLayout::passworldDir())) {
+        LittleFS.mkdir(SDLayout::passworldDir());
         wlDir = SDLayout::passworldDir();
     }
 
@@ -1286,9 +1286,9 @@ bool PigpassMode::tryLoadCachedResult() {
     formatApBssid(bssid, sizeof(bssid));
 
     const char* path = SDLayout::pigpassResultsPath();
-    if (!SD.exists(path)) return false;
+    if (!LittleFS.exists(path)) return false;
 
-    File f = SD.open(path, FILE_READ);
+    File f = LittleFS.open(path, FILE_READ);
     if (!f) return false;
 
     // Line format: BSSID:SSID:password  (BSSID = 12 hex chars, no separators)
@@ -1374,12 +1374,12 @@ void PigpassMode::saveCheckpoint() {
     if (state != PigpassState::RUNNING && state != PigpassState::PAUSED) return;
 
     const char* dir = SDLayout::pigpassDir();
-    if (dir && dir[0] && !SD.exists(dir)) SD.mkdir(dir);
+    if (dir && dir[0] && !LittleFS.exists(dir)) LittleFS.mkdir(dir);
 
     const char* path = SDLayout::pigpassCheckpointPath();
     if (!path) return;
 
-    File f = SD.open(path, FILE_WRITE);
+    File f = LittleFS.open(path, FILE_WRITE);
     if (!f) {
         Serial.println("[PIGPASS] checkpoint write fail");
         return;
@@ -1411,9 +1411,9 @@ bool PigpassMode::loadCheckpoint(const char* hsPath, const char* wlPath,
     if (!hsPath || !wlPath || !Config::isSDAvailable()) return false;
 
     const char* path = SDLayout::pigpassCheckpointPath();
-    if (!path || !SD.exists(path)) return false;
+    if (!path || !LittleFS.exists(path)) return false;
 
-    File f = SD.open(path, FILE_READ);
+    File f = LittleFS.open(path, FILE_READ);
     if (!f) return false;
 
     String ver = f.readStringUntil('\n');
@@ -1447,8 +1447,8 @@ bool PigpassMode::loadCheckpoint(const char* hsPath, const char* wlPath,
 void PigpassMode::clearCheckpoint() {
     if (!Config::isSDAvailable()) return;
     const char* path = SDLayout::pigpassCheckpointPath();
-    if (path && SD.exists(path)) {
-        SD.remove(path);
+    if (path && LittleFS.exists(path)) {
+        LittleFS.remove(path);
         Serial.println("[PIGPASS] checkpoint cleared");
     }
     s_resumePending = false;
@@ -1462,8 +1462,8 @@ void PigpassMode::saveCrackedResult(const char* password) {
 
     // Ensure pigpass dir exists
     const char* dir = SDLayout::pigpassDir();
-    if (dir && dir[0] && !SD.exists(dir)) {
-        SD.mkdir(dir);
+    if (dir && dir[0] && !LittleFS.exists(dir)) {
+        LittleFS.mkdir(dir);
     }
 
     char bssid[13];
@@ -1471,8 +1471,8 @@ void PigpassMode::saveCrackedResult(const char* password) {
     const char* path = SDLayout::pigpassResultsPath();
 
     // Skip write if this BSSID is already cached (do not touch found* flags)
-    if (SD.exists(path)) {
-        File rf = SD.open(path, FILE_READ);
+    if (LittleFS.exists(path)) {
+        File rf = LittleFS.open(path, FILE_READ);
         if (rf) {
             char line[160];
             size_t pos = 0;
@@ -1507,9 +1507,9 @@ void PigpassMode::saveCrackedResult(const char* password) {
     }
 
     // Prefer append mode ("a"); FILE_APPEND is defined by Arduino FS
-    File f = SD.open(path, "a");
+    File f = LittleFS.open(path, "a");
     if (!f) {
-        f = SD.open(path, FILE_WRITE);
+        f = LittleFS.open(path, FILE_WRITE);
         if (!f) {
             Serial.printf("[PIGPASS] ERROR: cannot write cache %s\n", path);
             return;
@@ -2177,7 +2177,7 @@ void PigpassMode::runBrute() {
     if (!s_sessionStarted && !s_wordlistDone) {
         if (!maskMode) {
             if (!wordlistFile) {
-                wordlistFile = SD.open(wordlistPath, FILE_READ);
+                wordlistFile = LittleFS.open(wordlistPath, FILE_READ);
                 if (!wordlistFile) {
                     Serial.printf("[PIGPASS] ERROR: Cannot open wordlist: %s\n", wordlistPath);
                     Display::showToast("WORDLIST OPEN FAIL");

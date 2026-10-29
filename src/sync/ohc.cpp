@@ -6,7 +6,7 @@
 #include "tls.h"
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
-#include <SD.h>
+#include <LittleFS.h>
 #include <ctype.h>
 #include <stdlib.h>
 #include <string.h>
@@ -46,7 +46,7 @@ struct UploadedEntry {
     char id[OHC_ID_MAX];
 };
 
-// Uploaded-id cache. The captures themselves stay on SD.
+// Uploaded-id cache. The captures themselves stay on LittleFS.
 static bool   s_cacheLoaded = false;
 static char   s_lastError[64] = "";
 static volatile bool s_busy = false;
@@ -229,7 +229,7 @@ static void pushUploaded(const char* id) {
 static bool loadUploadedList() {
     s_uploaded.clear();
     if (!Storage::fileExists(Storage::FILE_OHC_UPLOADED)) return true;
-    File f = SD.open(Storage::FILE_OHC_UPLOADED, "r");
+    File f = LittleFS.open(Storage::FILE_OHC_UPLOADED, "r");
     if (!f) return false;
     char line[64];
     while (f.available() && s_uploaded.size() < OHC_MAX_CACHE) {
@@ -246,16 +246,16 @@ static bool loadUploadedList() {
 static bool saveUploadedList() {
     Storage::ensureDir(Storage::DIR_OHC);
     const char* tmp = "/0N3P0rK/ohc/uploaded.tmp";
-    File f = SD.open(tmp, "w");
+    File f = LittleFS.open(tmp, "w");
     if (!f) return false;
     for (const auto& e : s_uploaded) {
         if (e.id[0]) f.println(e.id);
     }
     f.flush();
     f.close();
-    SD.remove(Storage::FILE_OHC_UPLOADED);
-    if (!SD.rename(tmp, Storage::FILE_OHC_UPLOADED)) {
-        SD.remove(tmp);
+    LittleFS.remove(Storage::FILE_OHC_UPLOADED);
+    if (!LittleFS.rename(tmp, Storage::FILE_OHC_UPLOADED)) {
+        LittleFS.remove(tmp);
         return false;
     }
     Serial.printf("[OHC] saved %u sent\n", (unsigned)s_uploaded.size());
@@ -320,7 +320,7 @@ static bool uploadCapture(const char* filepath, const char* email,
         return false;
     }
 
-    File capFile = SD.open(filepath, "r");
+    File capFile = LittleFS.open(filepath, "r");
     if (!capFile) {
         snprintf(s_lastError, sizeof(s_lastError), "open fail");
         if (out) snprintf(out->error, sizeof(out->error), "%s", s_lastError);
@@ -678,7 +678,7 @@ OhcSyncResult syncCaptures(const char* email, OhcProgressCallback cb) {
     // WPASec uses for its pending list.
     Storage::ensureDir(Storage::DIR_OHC);
     uint16_t queued = 0;
-    File pend = SD.open(OHC_PENDING, "w");
+    File pend = LittleFS.open(OHC_PENDING, "w");
     if (pend) {
         OhcPendCtx ctx{&pend, 0};
         Storage::forEachHandshake(ohcCollect, &ctx);
@@ -686,24 +686,24 @@ OhcSyncResult syncCaptures(const char* email, OhcProgressCallback cb) {
         pend.close();
     }
     if (queued == 0) {
-        SD.remove(OHC_PENDING);
+        LittleFS.remove(OHC_PENDING);
         result.success = true;
         s_busy = false;
         Serial.println("[OHC] nothing pending");
         return result;
     }
 
-    // Per-run report on SD. The device is normally used with no console
+    // Per-run report on LittleFS. The device is normally used with no console
     // attached, so this file is how a partial or failing run can actually be
     // inspected: open it from FILEMGR or pull it over XFER.
-    File log = SD.open(OHC_LASTLOG, "w");
+    File log = LittleFS.open(OHC_LASTLOG, "w");
     if (log) {
         log.printf("# 0N3P0rK OHC build=%s\n", ON3PORK_VERSION);
         log.printf("# queued=%u email=%s\n", (unsigned)queued, email);
         log.println("# name|bytes|magic|status|acc|skip|rej|detail");
     }
 
-    File in = SD.open(OHC_PENDING, "r");
+    File in = LittleFS.open(OHC_PENDING, "r");
     uint16_t i = 0;
     uint8_t heapStrikes = 0;
     char line[80];
@@ -816,7 +816,7 @@ OhcSyncResult syncCaptures(const char* email, OhcProgressCallback cb) {
         yield();
     }
     if (in) in.close();
-    SD.remove(OHC_PENDING);
+    LittleFS.remove(OHC_PENDING);
     if (result.uploaded || result.already) saveUploadedList();
 
     // OnlineHashCrack has no potfile endpoint: the capture is deleted server

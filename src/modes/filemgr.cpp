@@ -7,7 +7,7 @@
 #include "../core/config.h"
 #include "../core/app.h"
 #include <M5Unified.h>
-#include <SD.h>
+#include <LittleFS.h>
 #include <string.h>
 #include <strings.h>
 #include <stdio.h>
@@ -56,7 +56,7 @@ class SDImageData : public lgfx::DataWrapper {
 public:
     SDImageData() { need_transaction = true; }
     bool open(const char* path) override {
-        file = SD.open(path, FILE_READ);
+        file = LittleFS.open(path, FILE_READ);
         return (bool)file;
     }
     int read(uint8_t* data, uint32_t length) override {
@@ -182,7 +182,7 @@ void FileMgrMode::refreshList() {
     listTruncated = false;
     if (!Storage::available() || !Config::isSDAvailable()) return;
 
-    File dir = SD.open(curPath);
+    File dir = LittleFS.open(curPath);
     if (!dir || !dir.isDirectory()) {
         if (dir) dir.close();
         return;
@@ -266,7 +266,7 @@ bool FileMgrMode::imageType(const char* name) {
 
 bool FileMgrMode::loadFile(const char* path) {
     if (!allocateTextBuffer()) return false;
-    File file = SD.open(path, FILE_READ);
+    File file = LittleFS.open(path, FILE_READ);
     if (!file || file.isDirectory()) {
         if (file) file.close();
         freeTextBuffer();
@@ -294,31 +294,31 @@ bool FileMgrMode::saveFile() {
         strncpy(statusMsg, "PATH TOO LONG", STATUS_BUF - 1);
         return false;
     }
-    if (SD.exists(temp) && !SD.remove(temp)) return false;
-    File file = SD.open(temp, FILE_WRITE);
+    if (LittleFS.exists(temp) && !LittleFS.remove(temp)) return false;
+    File file = LittleFS.open(temp, FILE_WRITE);
     if (!file) return false;
     size_t written = file.write((const uint8_t*)buf, bufLen);
     file.flush();
     file.close();
     if (written != bufLen) {
-        SD.remove(temp);
+        LittleFS.remove(temp);
         return false;
     }
 
-    bool hadOriginal = SD.exists(path);
+    bool hadOriginal = LittleFS.exists(path);
     if (hadOriginal) {
-        if (SD.exists(backup)) SD.remove(backup);
-        if (!SD.rename(path, backup)) {
-            SD.remove(temp);
+        if (LittleFS.exists(backup)) LittleFS.remove(backup);
+        if (!LittleFS.rename(path, backup)) {
+            LittleFS.remove(temp);
             return false;
         }
     }
-    if (!SD.rename(temp, path)) {
-        if (hadOriginal) SD.rename(backup, path);
-        SD.remove(temp);
+    if (!LittleFS.rename(temp, path)) {
+        if (hadOriginal) LittleFS.rename(backup, path);
+        LittleFS.remove(temp);
         return false;
     }
-    if (hadOriginal) SD.remove(backup);
+    if (hadOriginal) LittleFS.remove(backup);
     dirty = false;
     return true;
 }
@@ -389,7 +389,7 @@ bool FileMgrMode::commitNameInput() {
             return true;
         }
     }
-    if (SD.exists(target)) {
+    if (LittleFS.exists(target)) {
         phase = Phase::CONFIRM_OVERWRITE;
         strncpy(statusMsg, "REPLACE EXISTING?", STATUS_BUF - 1);
         return false;
@@ -397,15 +397,15 @@ bool FileMgrMode::commitNameInput() {
 
     bool ok = false;
     if (nameAction == NameAction::NEW_DIR) {
-        ok = SD.mkdir(target);
+        ok = LittleFS.mkdir(target);
     } else if (nameAction == NameAction::NEW_FILE) {
-        File file = SD.open(target, FILE_WRITE);
+        File file = LittleFS.open(target, FILE_WRITE);
         ok = (bool)file;
         if (file) file.close();
     } else if (sel < entryCount) {
         char source[PATH_BUF];
         buildFullPath(source, sizeof(source), entries[sel].name);
-        ok = SD.rename(source, target);
+        ok = LittleFS.rename(source, target);
     }
     if (!ok) {
         Display::showToast("OPERATION FAILED", 1000);
@@ -428,11 +428,11 @@ bool FileMgrMode::commitNameInput() {
 
 bool FileMgrMode::removePath(const char* path, uint8_t depth) {
     if (depth > MAX_PATH_DEPTH) return false;
-    File node = SD.open(path);
+    File node = LittleFS.open(path);
     if (!node) return false;
     if (!node.isDirectory()) {
         node.close();
-        return SD.remove(path);
+        return LittleFS.remove(path);
     }
     File child = node.openNextFile();
     bool ok = true;
@@ -453,17 +453,17 @@ bool FileMgrMode::removePath(const char* path, uint8_t depth) {
     }
     node.close();
     if (!ok) return false;
-    return SD.rmdir(path);
+    return LittleFS.rmdir(path);
 }
 
 bool FileMgrMode::copyPath(const char* src, const char* dst, uint8_t depth) {
     if (depth > MAX_PATH_DEPTH) return false;
-    File input = SD.open(src, FILE_READ);
+    File input = LittleFS.open(src, FILE_READ);
     if (!input) return false;
     if (input.isDirectory()) {
         input.close();
-        if (!SD.exists(dst) && !SD.mkdir(dst)) return false;
-        File dir = SD.open(src);
+        if (!LittleFS.exists(dst) && !LittleFS.mkdir(dst)) return false;
+        File dir = LittleFS.open(src);
         if (!dir || !dir.isDirectory()) {
             if (dir) dir.close();
             return false;
@@ -488,7 +488,7 @@ bool FileMgrMode::copyPath(const char* src, const char* dst, uint8_t depth) {
         return ok;
     }
 
-    File output = SD.open(dst, FILE_WRITE);
+    File output = LittleFS.open(dst, FILE_WRITE);
     if (!output) {
         input.close();
         return false;
@@ -509,7 +509,7 @@ bool FileMgrMode::copyPath(const char* src, const char* dst, uint8_t depth) {
     output.flush();
     output.close();
     input.close();
-    if (!ok) SD.remove(dst);
+    if (!ok) LittleFS.remove(dst);
     return ok;
 }
 
@@ -529,14 +529,14 @@ bool FileMgrMode::pasteClipboard() {
         Display::showToast("SAME LOCATION", 800);
         return false;
     }
-    if (SD.exists(target)) {
+    if (LittleFS.exists(target)) {
         phase = Phase::CONFIRM_OVERWRITE;
         strncpy(statusMsg, "REPLACE PASTE TARGET?", STATUS_BUF - 1);
         return false;
     }
     bool ok = false;
     if (clipboardAction == ClipboardAction::MOVE) {
-        ok = SD.rename(clipboardPath, target);
+        ok = LittleFS.rename(clipboardPath, target);
         if (ok) clipboardAction = ClipboardAction::EMPTY;
     } else {
         ok = copyPath(clipboardPath, target);

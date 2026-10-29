@@ -1,10 +1,11 @@
-// SD card storage - OnePork layout on the Cardputer SD.
+// Internal flash (LittleFS) storage - OnePork layout on StickC Plus 2.
+// No SD slot on this board; everything lives in internal flash.
 // Namespace stays Storage so Stamp cap/sync keep compiling.
 #pragma once
 
 #include <Arduino.h>
 #include <FS.h>
-#include <SD.h>
+#include <LittleFS.h>
 
 namespace Storage {
 

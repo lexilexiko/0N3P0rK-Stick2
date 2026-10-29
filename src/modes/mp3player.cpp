@@ -16,7 +16,7 @@
 #include "../ui/display.h"
 #include "../ui/keys.h"
 #include <M5Unified.h>
-#include <SD.h>
+#include <LittleFS.h>
 #include <esp_heap_caps.h>
 #include <math.h>
 #include <stdio.h>
@@ -299,14 +299,14 @@ bool openTrack(uint8_t idx, uint32_t pos) {
     // Open the exact path captured during rescan.  Do NOT rebuild it from
     // the display name: Storage::FILE_NAME_MAX is 48 bytes and long UTF-8
     // filenames (for example Cyrillic names) can exceed that limit.  The old
-    // code truncated the name, so SD.open() returned false even for a healthy
+    // code truncated the name, so LittleFS.open() returned false even for a healthy
     // 3-6 MB MP3.
     const char* path = s_path;
     if (!path[0]) {
         setMsg("OPEN FAIL");
         return false;
     }
-    s_file = SD.open(path, "r");
+    s_file = LittleFS.open(path, "r");
     if (!s_file) {
         setMsg("OPEN FAIL");
         return false;
@@ -546,7 +546,7 @@ bool findTrack(uint8_t wanted, char* pathOut, size_t pathCap,
                char* nameOut, size_t nameCap) {
     if (!Storage::available()) return false;
 
-    File dir = SD.open(MUSIC_DIR);
+    File dir = LittleFS.open(MUSIC_DIR);
     if (!dir || !dir.isDirectory()) {
         if (dir) dir.close();
         return false;
@@ -600,7 +600,7 @@ bool findTrack(uint8_t wanted, char* pathOut, size_t pathCap,
 uint8_t countTracks() {
     if (!Storage::available()) return 0;
 
-    File dir = SD.open(MUSIC_DIR);
+    File dir = LittleFS.open(MUSIC_DIR);
     if (!dir || !dir.isDirectory()) {
         if (dir) dir.close();
         return 0;
@@ -641,8 +641,8 @@ void rescan() {
         return;
     }
 
-    SD.mkdir(MUSIC_DIR);
-    File dir = SD.open(MUSIC_DIR);
+    LittleFS.mkdir(MUSIC_DIR);
+    File dir = LittleFS.open(MUSIC_DIR);
     if (!dir || !dir.isDirectory()) {
         if (dir) dir.close();
         setMsg("NO DIRECTORY");
