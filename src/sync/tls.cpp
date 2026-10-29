@@ -42,13 +42,13 @@ void arenaBegin(void* buf, size_t size) {
     if (s_heap || !buf || size < 2048) return;
     s_heap = multi_heap_register(buf, size);
     if (!s_heap) {
-        Serial.println("[TLS] arena fail");
+        Serial2.println("[TLS] arena fail");
         return;
     }
     s_lo = (uint8_t*)buf;
     s_hi = s_lo + size;
     mbedtls_platform_set_calloc_free(arenaCalloc, arenaFree);
-    Serial.printf("[TLS] arena %u\n", (unsigned)size);
+    Serial2.printf("[TLS] arena %u\n", (unsigned)size);
 }
 
 void arenaEnd() {

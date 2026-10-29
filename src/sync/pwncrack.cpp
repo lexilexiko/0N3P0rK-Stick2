@@ -144,7 +144,7 @@ bool Pwncrack::saveUploadedList() {
         LittleFS.remove(tmp);
         return false;
     }
-    Serial.printf("[PWNCRACK] saved %u uploaded\n", (unsigned)uploadedCache.size());
+    Serial2.printf("[PWNCRACK] saved %u uploaded\n", (unsigned)uploadedCache.size());
     return true;
 }
 
@@ -206,7 +206,7 @@ bool Pwncrack::loadCache() {
         }
     }
     cacheLoaded = true;
-    Serial.printf("[PWNCRACK] cache cracked=%u uploaded=%u\n",
+    Serial2.printf("[PWNCRACK] cache cracked=%u uploaded=%u\n",
                   (unsigned)crackedCache.size(), (unsigned)uploadedCache.size());
     return true;
 }
@@ -317,7 +317,7 @@ bool Pwncrack::uploadFile(const char* filepath, const char* apiKey) {
     } else {
         snprintf(uploadName, sizeof(uploadName), "%s.hc22000", filename);
     }
-    Serial.printf("[PWNCRACK] upload %s as %s (%u B)\n",
+    Serial2.printf("[PWNCRACK] upload %s as %s (%u B)\n",
                   filename, uploadName, (unsigned)fileSize);
 
     char boundary[32];
@@ -344,7 +344,7 @@ bool Pwncrack::uploadFile(const char* filepath, const char* apiKey) {
         snprintf(lastError, sizeof(lastError), "connect fail");
         return false;
     }
-    Serial.printf("[PWNCRACK] via %s\n", useTls ? "HTTPS" : "HTTP");
+    Serial2.printf("[PWNCRACK] via %s\n", useTls ? "HTTPS" : "HTTP");
     WiFiClient& sock = useTls ? (WiFiClient&)tls : (WiFiClient&)plain;
     sock.setTimeout(60000);
     ioXfer().sent = 0;
@@ -415,10 +415,10 @@ bool Pwncrack::uploadFile(const char* filepath, const char* apiKey) {
     ioReadStatusLine(sock, status, sizeof(status), 45000);
     ioDrain(sock, 20000);
     sock.stop();
-    Serial.printf("[PWNCRACK] %s\n", status);
+    Serial2.printf("[PWNCRACK] %s\n", status);
 
     if (ioHttpRedirect(status) && !useTls && !s_forceHttps) {
-        Serial.println("[PWNCRACK] HTTP redirected, retry HTTPS");
+        Serial2.println("[PWNCRACK] HTTP redirected, retry HTTPS");
         s_forceHttps = true;
         bool again = uploadFile(filepath, apiKey);
         s_forceHttps = false;
@@ -512,7 +512,7 @@ bool Pwncrack::downloadPotfile(const char* apiKey, uint16_t& newCracks) {
                 if (first) {
                     first = false;
                     statusOk = (strstr(line, "200") != nullptr);
-                    Serial.printf("[PWNCRACK] pot %s via %s\n", line, useTls ? "HTTPS" : "HTTP");
+                    Serial2.printf("[PWNCRACK] pot %s via %s\n", line, useTls ? "HTTPS" : "HTTP");
                 }
                 if (li == 0 || (li == 1 && line[0] == '\r')) headersDone = true;
                 li = 0;
@@ -545,7 +545,7 @@ bool Pwncrack::downloadPotfile(const char* apiKey, uint16_t& newCracks) {
     if (looksHtml || body < 4) {
         LittleFS.remove(potTmp);
         snprintf(lastError, sizeof(lastError), looksHtml ? "pot html" : "pot empty");
-        Serial.printf("[PWNCRACK] pot rejected: %s (body=%u), keep old\n",
+        Serial2.printf("[PWNCRACK] pot rejected: %s (body=%u), keep old\n",
                       lastError, (unsigned)body);
         return false;
     }
@@ -578,7 +578,7 @@ bool Pwncrack::downloadPotfile(const char* apiKey, uint16_t& newCracks) {
     loadCache();
     uint16_t after = (uint16_t)crackedCache.size();
     newCracks = (after > before) ? (uint16_t)(after - before) : 0;
-    Serial.printf("[PWNCRACK] pot %u B cracked=%u\n", (unsigned)body, after);
+    Serial2.printf("[PWNCRACK] pot %u B cracked=%u\n", (unsigned)body, after);
     lastError[0] = '\0';
     return true;
 }
@@ -638,10 +638,10 @@ PwncrackSyncResult Pwncrack::syncCaptures(const char* apiKey, PwncrackProgressCa
         if (cb) cb("Converting", 0, 1);
         conv = Hc22000::convertAllPcaps();
     } else {
-        Serial.printf("[PWNCRACK] skip convert, blk %uK\n",
+        Serial2.printf("[PWNCRACK] skip convert, blk %uK\n",
                       (unsigned)(largest / 1024));
     }
-    Serial.printf("[PWNCRACK] converted %u pcap->22000\n", (unsigned)conv);
+    Serial2.printf("[PWNCRACK] converted %u pcap->22000\n", (unsigned)conv);
     Storage::brewHeap();
 
     loadCache();
@@ -653,7 +653,7 @@ PwncrackSyncResult Pwncrack::syncCaptures(const char* apiKey, PwncrackProgressCa
     if (pend.out) Storage::forEachPwn(pwnCollect, &pend);
     if (pendOut) pendOut.close();
     result.skipped = pend.skipped;
-    Serial.printf("[PWNCRACK] pending=%u skipped=%u\n", pend.count, pend.skipped);
+    Serial2.printf("[PWNCRACK] pending=%u skipped=%u\n", pend.count, pend.skipped);
 
     crackedCache.clear();
     // uploaded list stays; cracked is stale until we reload from SD after potfile
@@ -713,7 +713,7 @@ PwncrackSyncResult Pwncrack::syncCaptures(const char* apiKey, PwncrackProgressCa
     }
 
     busy = false;
-    Serial.printf("[PWNCRACK] done up=%u fail=%u skip=%u cracked=%u\n",
+    Serial2.printf("[PWNCRACK] done up=%u fail=%u skip=%u cracked=%u\n",
                   result.uploaded, result.failed, result.skipped, result.cracked);
     return result;
 }

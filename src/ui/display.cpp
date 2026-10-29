@@ -25,9 +25,7 @@
 #include "../modes/blepig.h"
 #include "../modes/irport.h"
 #include "../modes/spectrum.h"
-#include "../modes/usbsd.h"
 #include "../modes/xfer.h"
-#include "../modes/badusb.h"
 #include "../modes/filemgr.h"
 #include "../modes/inspectorpig.h"
 #include "../modes/mp3player.h"
@@ -271,7 +269,7 @@ void Display::init() {
     Trees::init();
     SceneLayers::init();
 
-    Serial.println("[DISPLAY] ok");
+    Serial2.println("[DISPLAY] ok");
 }
 
 void Display::showBootSplash() {
@@ -995,17 +993,11 @@ void Display::drawBottomBar() {
             case AppMode::SPECTRUM:
                 SpectrumMode::getStatusLine(left, sizeof(left));
                 break;
-            case AppMode::USBSD:
-                UsbSdMode::getStatusLine(left, sizeof(left));
-                break;
             case AppMode::FILEMGR:
                 FileMgrMode::getStatusLine(left, sizeof(left));
                 break;
             case AppMode::XFER:
                 XferMode::getStatusLine(left, sizeof(left));
-                break;
-            case AppMode::BADUSB:
-                BadUsbMode::getStatusLine(left, sizeof(left));
                 break;
             case AppMode::MP3:
                 Mp3PlayerMode::getStatusLine(left, sizeof(left));
@@ -1171,10 +1163,8 @@ void Display::update() {
         else if (App::mode() == AppMode::BLE) BlePigMode::draw(mainCanvas);
         else if (App::mode() == AppMode::IR) IrPortMode::draw(mainCanvas);
         else if (App::mode() == AppMode::SPECTRUM) SpectrumMode::draw(mainCanvas);
-        else if (App::mode() == AppMode::USBSD) UsbSdMode::draw(mainCanvas);
         else if (App::mode() == AppMode::FILEMGR) FileMgrMode::draw(mainCanvas);
         else if (App::mode() == AppMode::XFER) XferMode::draw(mainCanvas);
-        else if (App::mode() == AppMode::BADUSB) BadUsbMode::draw(mainCanvas);
         else if (App::mode() == AppMode::MP3) Mp3PlayerMode::draw(mainCanvas);
         else if (App::mode() == AppMode::INSPECTOR) InspectorPig::draw(mainCanvas);
         else Menu::draw(mainCanvas);

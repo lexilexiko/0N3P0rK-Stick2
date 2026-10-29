@@ -251,7 +251,7 @@ static void loadTalkFromSd() {
         "feathers rm -rf\n"
         "no fly zone active\n");
     for (uint8_t k = 0; k < TK_COUNT; k++) loadTalkFile((TalkKind)k);
-    Serial.printf("[TALK] sd lines idle=%u happy=%u\n",
+    Serial2.printf("[TALK] sd lines idle=%u happy=%u\n",
                   (unsigned)s_talkN[TK_IDLE], (unsigned)s_talkN[TK_HAPPY]);
 }
 

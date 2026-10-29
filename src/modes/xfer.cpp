@@ -6,7 +6,6 @@
 #include "../core/app.h"
 #include "../core/config.h"
 #include "../piglet/avatar.h"
-#include "../modes/usbsd.h"
 #include <M5Unified.h>
 #include <WiFi.h>
 #include <WebServer.h>
@@ -207,7 +206,6 @@ void start() {
     s_hits = 0;
     Avatar::suspendScene();
     if (Cap::isRunning()) Cap::stop();
-    if (UsbSdMode::isRunning()) UsbSdMode::stop();
 
     WiFi.persistent(false);
     WiFi.disconnect(true, true);

@@ -258,7 +258,7 @@ static bool saveUploadedList() {
         LittleFS.remove(tmp);
         return false;
     }
-    Serial.printf("[OHC] saved %u sent\n", (unsigned)s_uploaded.size());
+    Serial2.printf("[OHC] saved %u sent\n", (unsigned)s_uploaded.size());
     return true;
 }
 
@@ -549,7 +549,7 @@ static bool uploadCapture(const char* filepath, const char* email,
         out->skippedCount = skip;
         out->rejectedCount = rej;
     }
-    Serial.printf("[OHC] %s acc=%u skip=%u rej=%u\n",
+    Serial2.printf("[OHC] %s acc=%u skip=%u rej=%u\n",
                   status, (unsigned)acc, (unsigned)skip, (unsigned)rej);
     yield();
 
@@ -689,7 +689,7 @@ OhcSyncResult syncCaptures(const char* email, OhcProgressCallback cb) {
         LittleFS.remove(OHC_PENDING);
         result.success = true;
         s_busy = false;
-        Serial.println("[OHC] nothing pending");
+        Serial2.println("[OHC] nothing pending");
         return result;
     }
 
@@ -737,7 +737,7 @@ OhcSyncResult syncCaptures(const char* email, OhcProgressCallback cb) {
                     uint16_t left = (uint16_t)(queued - i);
                     result.failed += left;
                     ioXfer().fail += left;
-                    Serial.printf("[OHC] heap stop, %u files left\n", (unsigned)left);
+                    Serial2.printf("[OHC] heap stop, %u files left\n", (unsigned)left);
                     if (log) log.printf("# stopped: %u files left\n", (unsigned)left);
                     break;
                 }
@@ -792,12 +792,12 @@ OhcSyncResult syncCaptures(const char* email, OhcProgressCallback cb) {
                 snprintf(firstErr, sizeof(firstErr), "%s",
                          ur.error[0] ? ur.error : s_lastError);
         }
-        // One line per capture, on SD and on the serial console, carrying the
+        // One line per capture, on SD and on the Serial2 console, carrying the
         // container facts and the server's own counters and message.
         const char* st = ok ? (ur.alreadySent ? "already" : "ok")
                             : (ur.badFormat ? "bad"
                                             : (ur.noHashFound ? "nohash" : "fail"));
-        Serial.printf("[OHC] %-34s b=%u m=%08X %s acc=%u skip=%u rej=%u %s\n",
+        Serial2.printf("[OHC] %-34s b=%u m=%08X %s acc=%u skip=%u rej=%u %s\n",
                       line, (unsigned)ur.bytes, (unsigned)ur.magic, st,
                       (unsigned)ur.acceptedCount, (unsigned)ur.skippedCount,
                       (unsigned)ur.rejectedCount,
@@ -844,7 +844,7 @@ OhcSyncResult syncCaptures(const char* email, OhcProgressCallback cb) {
     }
 
     s_busy = false;
-    Serial.printf("[OHC] done up=%u already=%u empty=%u fail=%u\n",
+    Serial2.printf("[OHC] done up=%u already=%u empty=%u fail=%u\n",
                   (unsigned)result.uploaded, (unsigned)result.already,
                   (unsigned)result.empty, (unsigned)result.failed);
     return result;
