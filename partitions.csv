@@ -1,9 +1,8 @@
-# 8 MB flash — large app partition, internal LittleFS ~4.8MB
-# Everything (loot / handshakes / talk) now lives in internal flash (no SD slot on StickC Plus 2)
-# Arduino LittleFS.begin() looks up label "spiffs".
+# 8 MB flash — Увеличенный размер приложения до 3.25 МБ, LittleFS ~4.1 МБ
+# Everything (loot / handshakes / talk) lives in internal flash
 # Name,     Type, SubType,  Offset,   Size,     Flags
 nvs,        data, nvs,      0x9000,   0x6000,
 phy_init,   data, phy,      0xf000,   0x1000,
-factory,    app,  factory,  0x10000,  0x280000,
-spiffs,     data, spiffs,   0x290000, 0x4A0000,
-coredump,   data, coredump, 0x7F0000, 0x10000,
+factory,    app,  factory,  0x10000,  0x340000,
+spiffs,     data, spiffs,   0x350000, 0x420000,
+coredump,   data, coredump, 0x770000, 0x10000,
