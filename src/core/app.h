@@ -16,7 +16,6 @@ enum class AppMode : uint8_t {
     USBSD,
     FILEMGR,
     XFER,
-    BADUSB,
     TASKS
 };
 

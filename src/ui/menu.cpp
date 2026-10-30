@@ -182,7 +182,6 @@ static const Item G_SET[] = {
 };
 static const Item G_CONNECT[] = {
     {"))", "WIFI",    6,  H_CONN,   2},
-    {"KB", "BADUSB",  21, H_BADUSB, 2},
     {"U:", "USB SD",  17, H_USB,    2},
     {"F:", "XFER",    22, H_XFER,   2}
 };
@@ -291,10 +290,6 @@ static void doAction(uint8_t id) {
         case 17:
             if (Cap::isRunning()) Cap::stop();
             App::setMode(AppMode::USBSD);
-            break;
-        case 21:
-            if (Cap::isRunning()) Cap::stop();
-            App::setMode(AppMode::BADUSB);
             break;
         case 22:
             if (Cap::isRunning()) Cap::stop();
