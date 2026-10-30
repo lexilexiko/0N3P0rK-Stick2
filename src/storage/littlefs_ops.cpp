@@ -80,20 +80,20 @@ bool begin() {
     }
 
     if (!LittleFS.begin(true)) {
-        Serial2.println("[LittleFS] mount failed, formatting...");
+        Serial.println("[LittleFS] mount failed, formatting...");
         if (!LittleFS.format()) {
-            Serial2.println("[LittleFS] format failed");
+            Serial.println("[LittleFS] format failed");
             unlockSd();
             return false;
         }
         if (!LittleFS.begin(true)) {
-            Serial2.println("[LittleFS] mount failed after format");
+            Serial.println("[LittleFS] mount failed after format");
             unlockSd();
             return false;
         }
     }
 
-    Serial2.println("[LittleFS] mounted");
+    Serial.println("[LittleFS] mounted");
     s_mounted = true;
 
     LittleFS.mkdir(DIR_ROOT);
@@ -107,7 +107,6 @@ bool begin() {
     LittleFS.mkdir(DIR_IR);
     LittleFS.mkdir(DIR_WOLF);
     LittleFS.mkdir(DIR_TALK);
-    LittleFS.mkdir(DIR_MUSIC);
     LittleFS.mkdir(DIR_INSPECTOR);
     migrateLegacy();
     unlockSd();
@@ -122,7 +121,7 @@ void end() {
     }
     LittleFS.end();
     s_mounted = false;
-    Serial2.println("[LittleFS] released");
+    Serial.println("[LittleFS] released");
     unlockSd();
 }
 
@@ -250,11 +249,11 @@ static bool moveInto(const char* fromPath, const char* toDir) {
     snprintf(dest, sizeof(dest), "%s/%s", toDir, name);
     if (strcmp(fromPath, dest) == 0) return true;
     if (LittleFS.exists(dest)) {
-        Serial2.printf("[LittleFS] keep %s (already in loot)\n", name);
+        Serial.printf("[LittleFS] keep %s (already in loot)\n", name);
         return true;
     }
     if (LittleFS.rename(fromPath, dest)) {
-        Serial2.printf("[LittleFS] moved %s -> %s\n", fromPath, dest);
+        Serial.printf("[LittleFS] moved %s -> %s\n", fromPath, dest);
         return true;
     }
     File in = LittleFS.open(fromPath, "r");
@@ -274,7 +273,7 @@ static bool moveInto(const char* fromPath, const char* toDir) {
     in.close();
     out.close();
     LittleFS.remove(fromPath);
-    Serial2.printf("[LittleFS] copied %s -> %s\n", fromPath, dest);
+    Serial.printf("[LittleFS] copied %s -> %s\n", fromPath, dest);
     return true;
 }
 
@@ -463,13 +462,13 @@ void loadKeysIntoNet() {
     for (uint8_t i = 0; wpaKeys[i]; i++) {
         if (loadKeyFile(wpaKeys[i], buf, sizeof(buf))) {
             Net::setWpaSecKey(buf);
-            Serial2.println("[LittleFS] wpasec key loaded");
+            Serial.println("[LittleFS] wpasec key loaded");
             break;
         }
     }
     if (loadKeyFile(FILE_PWNCRACK_KEY, buf, sizeof(buf))) {
         Net::setPwncrackKey(buf);
-        Serial2.println("[LittleFS] pwncrack key loaded");
+        Serial.println("[LittleFS] pwncrack key loaded");
     }
     char mail[80];
     if (s_mounted && LittleFS.exists(FILE_OHC_EMAIL)) {
@@ -481,8 +480,8 @@ void loadKeysIntoNet() {
             while (n > 0 && (mail[n - 1] == '\n' || mail[n - 1] == '\r' || mail[n - 1] == ' '))
                 mail[--n] = '\0';
             if (mail[0]) {
-                if (Net::setOhcEmail(mail)) Serial2.println("[LittleFS] ohc email loaded");
-                else Serial2.println("[LittleFS] ohc email invalid, ignored");
+                if (Net::setOhcEmail(mail)) Serial.println("[LittleFS] ohc email loaded");
+                else Serial.println("[LittleFS] ohc email invalid, ignored");
             }
         }
     }
@@ -535,7 +534,7 @@ uint8_t eatRandomLoot(uint8_t want) {
         char dest[96];
         snprintf(dest, sizeof(dest), "%s/%s", DIR_WOLF, name);
         if (moveLootFile(list[pick].path, dest)) {
-            Serial2.printf("[LOOT] wolf hid %s\n", dest);
+            Serial.printf("[LOOT] wolf hid %s\n", dest);
             eaten++;
         }
         list[pick] = list[n - 1];
@@ -579,7 +578,7 @@ uint8_t restoreWolfLoot() {
             continue;
         }
         if (moveLootFile(src, dest)) {
-            Serial2.printf("[LOOT] wolf gave back %s\n", dest);
+            Serial.printf("[LOOT] wolf gave back %s\n", dest);
             given++;
         }
     }
@@ -690,7 +689,7 @@ static uint8_t compactOneDir(const char* dir) {
             if (LittleFS.remove(path)) {
                 dropCompanion(dir, list[j].name);
                 killed++;
-                Serial2.printf("[LOOT] dedup %s\n", list[j].name);
+                Serial.printf("[LOOT] dedup %s\n", list[j].name);
             }
         }
     }
@@ -700,7 +699,7 @@ static uint8_t compactOneDir(const char* dir) {
 uint8_t compactLoot() {
     if (!s_mounted) return 0;
     uint8_t n = compactOneDir(DIR_HS);
-    if (n) Serial2.printf("[LOOT] compact removed %u dupes\n", (unsigned)n);
+    if (n) Serial.printf("[LOOT] compact removed %u dupes\n", (unsigned)n);
     return n;
 }
 

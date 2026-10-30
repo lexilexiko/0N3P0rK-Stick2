@@ -66,7 +66,7 @@ bool take() {
     uint16_t num = nextNumber(dir);
     char path[48];
     snprintf(path, sizeof(path), "%s/screenshot%03d.bmp", dir, num);
-    Serial2.printf("[SNAP] %s\n", path);
+    Serial.printf("[SNAP] %s\n", path);
 
     File file;
     for (int i = 0; i < RETRY_N; i++) {
@@ -131,7 +131,7 @@ bool take() {
     char msg[32];
     snprintf(msg, sizeof(msg), "SNAP! #%d", num);
     Display::setTopBarMessage(msg, 2000);
-    Serial2.printf("[SNAP] saved %s (%lu bytes)\n", path, (unsigned long)filesize);
+    Serial.printf("[SNAP] saved %s (%lu bytes)\n", path, (unsigned long)filesize);
     return true;
 }
 

@@ -589,13 +589,6 @@ void setScreenOffMuted(bool muted) {
     applyMuteMask(m);
 }
 
-void setMp3Muted(bool muted) {
-    uint8_t m = s_muteMask;
-    if (muted) m |= MUTE_MP3;
-    else       m = (uint8_t)(m & ~MUTE_MP3);
-    applyMuteMask(m);
-}
-
 void setUploadMuted(bool muted) {
     uint8_t m = s_muteMask;
     if (muted) m |= MUTE_UPLOAD;

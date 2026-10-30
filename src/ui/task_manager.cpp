@@ -12,7 +12,6 @@
 #include "../modes/pigpass.h"
 #include "../modes/spectrum.h"
 #include "../modes/xfer.h"
-#include "../modes/mp3player.h"
 #include "../storage/littlefs_ops.h"
 #include "../sync/pwncrack.h"
 #include "../sync/wpasec.h"
@@ -26,7 +25,7 @@ namespace {
 
 enum Row : uint8_t {
     RADIO, WIFI, BLE, IR, EVILPIG, PIGPASS, SPECTRUM, USBSD, FILEMGR, XFER,
-    BADUSB, WPA_SYNC, PWN_SYNC, LOOT, MP3, INSPECTOR, STOP_ALL, ROW_COUNT
+    BADUSB, WPA_SYNC, PWN_SYNC, LOOT, INSPECTOR, STOP_ALL, ROW_COUNT
 };
 
 static constexpr uint8_t VISIBLE_ROWS = 5;
@@ -46,7 +45,7 @@ const char* rowName(Row row) {
     static const char* const names[] = {
         "RADIO", "WIFI", "BLE", "IR", "EVILPIG", "PIGPASS", "SPECTRUM",
         "USB SD", "FILES", "XFER", "BADUSB", "WPA-SEC", "PWNCRACK",
-        "LOOT", "MP3", "INSPECT", "STOP ALL"
+        "LOOT", "INSPECT", "STOP ALL"
     };
     return names[row];
 }
@@ -66,7 +65,6 @@ bool rowActive(Row row) {
         case WPA_SYNC: return WPASec::isBusy();
         case PWN_SYNC: return Pwncrack::isBusy();
         case LOOT: return LootMenu::isActive();
-        case MP3: return Mp3PlayerMode::isRunning();
         case INSPECTOR: return InspectorPig::isRunning();
         case ROW_COUNT: return false;
     }
@@ -143,9 +141,6 @@ void rowInfo(Row row, char* out, size_t n) {
         case LOOT:
             snprintf(out, n, "FILE SYNC / BROWSE");
             break;
-        case MP3:
-            snprintf(out, n, "PLAYER ACTIVE");
-            break;
         case STOP_ALL:
             snprintf(out, n, "ACTION");
             break;
@@ -173,7 +168,6 @@ void stopRow(Row row) {
         case PWN_SYNC:
             break;
         case LOOT: if (LootMenu::isActive()) LootMenu::hide(); break;
-        case MP3: if (Mp3PlayerMode::isRunning()) Mp3PlayerMode::stop(); break;
         case INSPECTOR: if (InspectorPig::isRunning()) InspectorPig::stop(); break;
         case STOP_ALL:
             Cap::stop();
@@ -184,7 +178,6 @@ void stopRow(Row row) {
             if (SpectrumMode::isRunning()) SpectrumMode::stop();
             if (FileMgrMode::isRunning()) FileMgrMode::stop();
             if (XferMode::isRunning()) XferMode::stop();
-            if (Mp3PlayerMode::isRunning()) Mp3PlayerMode::stop();
             if (InspectorPig::isRunning()) InspectorPig::stop();
             if (LootMenu::isActive()) LootMenu::hide();
             if (!networkSyncActive()) {

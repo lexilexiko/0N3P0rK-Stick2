@@ -26,7 +26,7 @@ void init() {
     if (initialized) return;
     
     // Log that bypass is active
-    Serial2.println("[WSL] Frame validation bypass active (-zmuldefs)");
+    Serial.println("[WSL] Frame validation bypass active (-zmuldefs)");
     initialized = true;
 }
 
@@ -82,10 +82,10 @@ void randomizeMAC() {
     esp_err_t result = esp_wifi_set_mac(WIFI_IF_STA, mac);
     
     if (result == ESP_OK) {
-        Serial2.printf("[WSL] MAC randomized: %02X:%02X:%02X:%02X:%02X:%02X\n",
+        Serial.printf("[WSL] MAC randomized: %02X:%02X:%02X:%02X:%02X:%02X\n",
                       mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
     } else {
-        Serial2.printf("[WSL] MAC randomization failed: %d\n", result);
+        Serial.printf("[WSL] MAC randomization failed: %d\n", result);
     }
 }
 

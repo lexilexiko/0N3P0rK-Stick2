@@ -918,7 +918,7 @@ void Avatar::suspendScene() {
         pendingGrassStart = false;
         s_playerWalkScroll = false;
         Wolf::reset();  // stop chase AI while scene is parked
-        Serial2.println("[AVATAR] Scene suspended (heavy work)");
+        Serial.println("[AVATAR] Scene suspended (heavy work)");
     }
     if (s_sceneSuspendDepth < 32) s_sceneSuspendDepth++;
 }
@@ -927,7 +927,7 @@ void Avatar::resumeScene() {
     if (s_sceneSuspendDepth <= 0) return;
     s_sceneSuspendDepth--;
     if (s_sceneSuspendDepth == 0) {
-        Serial2.println("[AVATAR] Scene resumed");
+        Serial.println("[AVATAR] Scene resumed");
     }
 }
 

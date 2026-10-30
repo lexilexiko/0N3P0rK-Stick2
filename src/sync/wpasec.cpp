@@ -153,7 +153,7 @@ bool WPASec::saveUploadedList() {
         LittleFS.remove(tmp);
         return false;
     }
-    Serial2.printf("[WPASEC] saved %u uploaded\n", (unsigned)uploadedCache.size());
+    Serial.printf("[WPASEC] saved %u uploaded\n", (unsigned)uploadedCache.size());
     return true;
 }
 
@@ -281,7 +281,7 @@ bool WPASec::uploadSingleCapture(const char* filepath, const char* bssid, const 
     }
 
     const char* filename = Storage::baseName(filepath);
-    Serial2.printf("[WPASEC] upload %s (%u B)\n", filename, (unsigned)fileSize);
+    Serial.printf("[WPASEC] upload %s (%u B)\n", filename, (unsigned)fileSize);
 
     WiFiClientSecure client;
     if (!ioTlsOpen(client, WPASEC_HOST, WPASEC_PORT)) {
@@ -331,7 +331,7 @@ bool WPASec::uploadSingleCapture(const char* filepath, const char* bssid, const 
     char resp[80] = {0};
     bool got = ioReadStatusLine(client, resp, sizeof(resp), 45000);
     ioDrain(client, 20000);
-    Serial2.printf("[WPASEC] %s\n", resp);
+    Serial.printf("[WPASEC] %s\n", resp);
     client.stop();
 
     bool ok = got && ioHttpOk(resp);
@@ -368,11 +368,11 @@ bool WPASec::downloadPotfile(const char* apiKey, uint16_t& newCracks) {
     if (!ioReadStatusLine(client, status, sizeof(status), 20000) || !ioHttpOk(status)) {
         ioDrain(client, 2000);
         client.stop();
-        Serial2.printf("[WPASEC] pot %s\n", status);
+        Serial.printf("[WPASEC] pot %s\n", status);
         snprintf(lastError, sizeof(lastError), "pot http");
         return false;
     }
-    Serial2.printf("[WPASEC] pot %s\n", status);
+    Serial.printf("[WPASEC] pot %s\n", status);
 
     char hline[160];
     size_t hi = 0;
@@ -433,7 +433,7 @@ bool WPASec::downloadPotfile(const char* apiKey, uint16_t& newCracks) {
         if (!keep) continue;
         out.println(line);
         lines++;
-        if (lines == 1) Serial2.printf("[WPASEC] pot sample: %.80s\n", line);
+        if (lines == 1) Serial.printf("[WPASEC] pot sample: %.80s\n", line);
         yield();
     }
     out.flush();
@@ -443,7 +443,7 @@ bool WPASec::downloadPotfile(const char* apiKey, uint16_t& newCracks) {
     if (lines == 0) {
         LittleFS.remove(potTmp);
         snprintf(lastError, sizeof(lastError), "pot empty");
-        Serial2.println("[WPASEC] pot no lines, keep old");
+        Serial.println("[WPASEC] pot no lines, keep old");
         return false;
     }
     LittleFS.remove(Storage::FILE_WPASEC_RESULTS);
@@ -456,7 +456,7 @@ bool WPASec::downloadPotfile(const char* apiKey, uint16_t& newCracks) {
     newCracks = lines;
     cacheLoaded = false;
     lastError[0] = '\0';
-    Serial2.printf("[WPASEC] potfile %u lines\n", (unsigned)lines);
+    Serial.printf("[WPASEC] potfile %u lines\n", (unsigned)lines);
     return true;
 }
 
@@ -527,7 +527,7 @@ WPASecSyncResult WPASec::syncCaptures(const char* apiKey, WPASecProgressCallback
     if (pend.out) Storage::forEachHandshake(wpaCollect, &pend);
     if (pendOut) pendOut.close();
     result.skipped = pend.skipped;
-    Serial2.printf("[WPASEC] pending=%u skipped=%u\n", pend.count, pend.skipped);
+    Serial.printf("[WPASEC] pending=%u skipped=%u\n", pend.count, pend.skipped);
 
     crackedCache.clear();
 
@@ -592,7 +592,7 @@ WPASecSyncResult WPASec::syncCaptures(const char* apiKey, WPASecProgressCallback
     }
 
     busy = false;
-    Serial2.printf("[WPASEC] done up=%u fail=%u skip=%u cracked=%u\n",
+    Serial.printf("[WPASEC] done up=%u fail=%u skip=%u cracked=%u\n",
                   result.uploaded, result.failed, result.skipped, result.cracked);
     return result;
 }

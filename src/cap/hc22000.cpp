@@ -337,7 +337,7 @@ static bool writeLine(Hs* h, const char* suffix, const char* line) {
         size_t sz = probe ? probe.size() : 0;
         if (probe) probe.close();
         if (sz >= 64 && fileHasStation(path, stationHex)) {
-            Serial2.printf("[22000] keep existing %s for STA %s\n",
+            Serial.printf("[22000] keep existing %s for STA %s\n",
                           Storage::baseName(path), stationHex);
             return true;
         }
@@ -358,7 +358,7 @@ static bool writeLine(Hs* h, const char* suffix, const char* line) {
     char ssid[33];
     essidOf(h, ssid);
     if (ssid[0]) CapName::writeCompanionSsid(Storage::DIR_HS, Storage::baseName(path), ssid);
-    Serial2.printf("[22000] %s %s for STA %s\n",
+    Serial.printf("[22000] %s %s for STA %s\n",
                   append ? "appended" : "wrote",
                   Storage::baseName(path), stationHex);
     return true;
@@ -431,7 +431,7 @@ static void maybeWrite(Hs* h) {
                 if (lineLen > 0 && (size_t)lineLen < sizeof(line)) {
                     if (writeLine(h, "_hs.22000", line)) h->wroteEapol = true;
                 } else {
-                    Serial2.println("[22000] EAPOL hash line exceeds output buffer");
+                    Serial.println("[22000] EAPOL hash line exceeds output buffer");
                 }
             }
         }
@@ -739,7 +739,7 @@ bool allocateMemory() {
     if (s_hs) return true;
     s_hs = new (std::nothrow) Hs[MAX_HS];
     if (!s_hs) {
-        Serial2.println("[22000] handshake table allocation failed");
+        Serial.println("[22000] handshake table allocation failed");
         return false;
     }
     memset(s_hs, 0, sizeof(Hs) * MAX_HS);

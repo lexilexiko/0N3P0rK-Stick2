@@ -50,7 +50,7 @@ void startKeyboard() {
     // Keep the HOLD pin (GPIO 4) high so the device stays powered on battery.
     pinMode(4, OUTPUT);
     digitalWrite(4, HIGH);
-    Serial2.printf("[KB] StickC Plus 2 (BtnA=37 BtnB=39 PWR=35)\n");
+    Serial.printf("[KB] StickC Plus 2 (BtnA=37 BtnB=39 PWR=35)\n");
 }
 
 } // namespace Board

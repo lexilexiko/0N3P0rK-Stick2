@@ -30,7 +30,7 @@ static Preferences s_prefs;
 bool Config::init() {
     if (initialized) return true;
     if (!s_prefs.begin("onelpig", false)) {
-        Serial2.println("[CFG] NVS open failed, using defaults");
+        Serial.println("[CFG] NVS open failed, using defaults");
         initialized = true;
         return false;
     }
@@ -68,7 +68,6 @@ bool Config::init() {
     p.wolfEatLoot = s_prefs.getBool("weat", p.wolfEatLoot);
     p.ledEnabled = s_prefs.getBool("leden", p.ledEnabled);
     p.ledBright = s_prefs.getUChar("ledbr", p.ledBright);
-    p.mp3Volume = s_prefs.getUChar("mp3vol", p.mp3Volume);
 
     RadioConfig& r = radioConfig;
     r.hopMs = s_prefs.getUShort("hop", r.hopMs);
@@ -156,7 +155,6 @@ bool Config::init() {
         p.pigSkinAlive = 0;
     if (p.seasonMode >= SEASON_MODE_COUNT) p.seasonMode = 0;
     if (p.skyMode >= SKY_MODE_COUNT) p.skyMode = 0;
-    if (p.mp3Volume > 100) p.mp3Volume = 100;
     if (r.hopMs < 50) r.hopMs = 50;
     if (r.hopMs > 2000) r.hopMs = 2000;
     if (r.lockMs > 15000) r.lockMs = 15000;
@@ -204,7 +202,7 @@ bool Config::init() {
     if (b.advMs > 200) b.advMs = 200;
 
     initialized = true;
-    Serial2.printf("[CFG] pig=%s skin=%u season=%u\n", p.name, p.pigSkin, p.seasonMode);
+    Serial.printf("[CFG] pig=%s skin=%u season=%u\n", p.name, p.pigSkin, p.seasonMode);
     return true;
 }
 
@@ -239,7 +237,6 @@ bool Config::save() {
     s_prefs.putBool("weat", p.wolfEatLoot);
     s_prefs.putBool("leden", p.ledEnabled);
     s_prefs.putUChar("ledbr", p.ledBright);
-    s_prefs.putUChar("mp3vol", p.mp3Volume);
 
     const RadioConfig& r = radioConfig;
     s_prefs.putUShort("hop", r.hopMs);

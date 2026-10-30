@@ -10,6 +10,6 @@ inline void log(const char* tag, const char* fmt, ...) {
     va_start(ap, fmt);
     vsnprintf(buf, sizeof(buf), fmt, ap);
     va_end(ap);
-    Serial2.printf("[%s] %s\n", tag ? tag : "LOG", buf);
+    Serial.printf("[%s] %s\n", tag ? tag : "LOG", buf);
 }
 }

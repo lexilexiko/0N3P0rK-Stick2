@@ -1019,7 +1019,7 @@ void LootMenu::update() {
             if (!s_tlsArenaBuf) s_tlsArenaBuf = (uint8_t*)malloc(arena);
         }
         Tls::arenaBegin(s_tlsArenaBuf, s_tlsArenaBuf ? arena : 0);
-        Serial2.printf("[LOOT] tls arena %u blk %u free %u\n",
+        Serial.printf("[LOOT] tls arena %u blk %u free %u\n",
                       (unsigned)(s_tlsArenaBuf ? arena : 0),
                       (unsigned)(largest / 1024),
                       (unsigned)(ESP.getFreeHeap() / 1024));

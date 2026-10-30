@@ -229,7 +229,7 @@ void EvilPigMode::init() {
 bool EvilPigMode::ensureHeap() {
     size_t freeH = esp_get_free_heap_size();
     size_t largest = heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
-    Serial2.printf("[EVILPIG] heap free=%u largest=%u\n", (unsigned)freeH, (unsigned)largest);
+    Serial.printf("[EVILPIG] heap free=%u largest=%u\n", (unsigned)freeH, (unsigned)largest);
     return freeH >= kMinFreeHeap && largest >= kMinLargest;
 }
 
@@ -292,7 +292,7 @@ uint8_t EvilPigMode::staScanIntoList() {
 
     int n = WiFi.scanNetworks(/*async=*/false, /*hidden=*/true);
     if (n < 0) {
-        Serial2.printf("[EVILPIG] scan failed code=%d\n", n);
+        Serial.printf("[EVILPIG] scan failed code=%d\n", n);
         n = 0;
     }
     for (int i = 0; i < n && listCount < MAX_LIST; i++) {
@@ -385,7 +385,7 @@ void EvilPigMode::refreshNetworkList() {
 
     lastListRefresh = millis();
     setStatus(listCount ? "SELECT" : "NO NETS");
-    Serial2.printf("[EVILPIG] list count=%u\n", (unsigned)listCount);
+    Serial.printf("[EVILPIG] list count=%u\n", (unsigned)listCount);
 }
 
 void EvilPigMode::applySelection() {
@@ -630,7 +630,7 @@ bool EvilPigMode::startPortal() {
         delay(120);
         if (!ensureHeap()) {
             setStatus("LOW HEAP");
-            Serial2.printf("[EVILPIG] LOW HEAP free=%u largest=%u\n",
+            Serial.printf("[EVILPIG] LOW HEAP free=%u largest=%u\n",
                           (unsigned)esp_get_free_heap_size(),
                           (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
             return false;
@@ -650,7 +650,7 @@ bool EvilPigMode::startPortal() {
 
     bool ok = WiFi.softAP(apSsid, nullptr, apChannel, 0, 8);
     if (!ok) {
-        Serial2.printf("[EVILPIG] softAP fail ch=%u, retry ch6\n", (unsigned)apChannel);
+        Serial.printf("[EVILPIG] softAP fail ch=%u, retry ch6\n", (unsigned)apChannel);
         apChannel = 6;
         delay(50);
         esp_wifi_set_channel(apChannel, WIFI_SECOND_CHAN_NONE);
@@ -701,7 +701,7 @@ bool EvilPigMode::startPortal() {
     s_prevSoftApClients = 0;
     setStatus(deauthOn ? "PORTAL+DEAUTH" : "PORTAL");
     snprintf(lastEvent, sizeof(lastEvent), "UP %s", apSsid);
-    Serial2.printf("[EVILPIG] portal SSID='%s' ch=%u ip=%s deauth=%d pmf=%d\n",
+    Serial.printf("[EVILPIG] portal SSID='%s' ch=%u ip=%s deauth=%d pmf=%d\n",
                   apSsid, (unsigned)apChannel, WiFi.softAPIP().toString().c_str(),
                   (int)deauthOn, (int)targetPmf);
     return true;
@@ -747,7 +747,7 @@ void EvilPigMode::tickDeauth() {
 }
 
 void EvilPigMode::start() {
-    Serial2.println("[EVILPIG] Starting...");
+    Serial.println("[EVILPIG] Starting...");
     init();
 
     bool ok = Display::showConfirmBox(
@@ -798,7 +798,7 @@ void EvilPigMode::start() {
 
 void EvilPigMode::stop() {
     if (!running && !server && !dns) return;
-    Serial2.println("[EVILPIG] Stopping...");
+    Serial.println("[EVILPIG] Stopping...");
     running = false;
     phase = Phase::SELECT;
     setStatus("STOP");

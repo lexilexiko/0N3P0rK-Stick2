@@ -19,7 +19,6 @@ enum class AppMode : uint8_t {
     FILEMGR,
     XFER,
     BADUSB,
-    MP3,
     TASKS,
     INSPECTOR
 };

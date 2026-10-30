@@ -9,7 +9,6 @@
 #include "core/xp.h"
 #include "core/app.h"
 #include "ui/display.h"
-#include "modes/mp3player.h"
 #include "ui/menu.h"
 #include "piglet/avatar.h"
 #include "piglet/mood.h"
@@ -32,23 +31,23 @@ static void preInitWiFiDriverEarly() {
 
 static void setupHeapLayout() {
     size_t beforeLargest = heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
-    Serial2.printf("[BOOT] pre-fence largest=%u\n", (unsigned)beforeLargest);
+    Serial.printf("[BOOT] pre-fence largest=%u\n", (unsigned)beforeLargest);
 
     static constexpr size_t kFenceSize = 80000;
     void* fence = heap_caps_malloc(kFenceSize, MALLOC_CAP_8BIT);
     preInitWiFiDriverEarly();
     if (fence) heap_caps_free(fence);
 
-    Serial2.printf("[BOOT] post-fence free=%u largest=%u\n",
+    Serial.printf("[BOOT] post-fence free=%u largest=%u\n",
                   (unsigned)ESP.getFreeHeap(),
                   (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
 }
 
 void setup() {
-    Serial2.begin(115200);
+    Serial.begin(115200);
     delay(120);
-    Serial2.println();
-    Serial2.printf(">>> %s v%s build=%s\n", ON3PORK_NAME, ON3PORK_VERSION, ON3PORK_BUILD);
+    Serial.println();
+    Serial.printf(">>> %s v%s build=%s\n", ON3PORK_NAME, ON3PORK_VERSION, ON3PORK_BUILD);
 
     auto cfg = M5.config();
     M5.begin(cfg);
@@ -58,10 +57,10 @@ void setup() {
     yield();
 
     if (!Storage::begin()) {
-        Serial2.println("[BOOT] LittleFS failed - continuing");
+        Serial.println("[BOOT] LittleFS failed - continuing");
     }
     Keys::begin();
-    Serial2.printf("[BOOT] board=%s\n", Board::modelLabel());
+    Serial.printf("[BOOT] board=%s\n", Board::modelLabel());
 
     Config::init();
     XP::begin();
@@ -84,8 +83,8 @@ void setup() {
     PigpassMode::init();
 
     Net::Status s = Net::status();
-    Serial2.printf("[BOOT] wifi mode ssid=%s ip=%s\n", s.ssid, s.ip);
-    Serial2.printf("[BOOT] pig=%s ready\n", Config::personality().name);
+    Serial.printf("[BOOT] wifi mode ssid=%s ip=%s\n", s.ssid, s.ip);
+    Serial.printf("[BOOT] pig=%s ready\n", Config::personality().name);
 }
 
 static unsigned long s_lastHeapLog = 0;
@@ -98,11 +97,10 @@ void loop() {
     SFX::update();
     XP::tick();
     Cap::loop();
-    Mp3PlayerMode::tick();   // keeps SD music running with the window hidden / screen off
 
     if (millis() - s_lastHeapLog > 30000) {
         s_lastHeapLog = millis();
-        Serial2.printf("[LOOP] heap=%u largest=%u cap=%s\n",
+        Serial.printf("[LOOP] heap=%u largest=%u cap=%s\n",
                       (unsigned)ESP.getFreeHeap(),
                       (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT),
                       Cap::runMode() == Cap::RunMode::Aggressive ? "AGG" :

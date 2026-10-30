@@ -28,7 +28,6 @@
 #include "../modes/xfer.h"
 #include "../modes/filemgr.h"
 #include "../modes/inspectorpig.h"
-#include "../modes/mp3player.h"
 #include "boot_splash.h"
 #include <M5Unified.h>
 #include <string.h>
@@ -269,7 +268,7 @@ void Display::init() {
     Trees::init();
     SceneLayers::init();
 
-    Serial2.println("[DISPLAY] ok");
+    Serial.println("[DISPLAY] ok");
 }
 
 void Display::showBootSplash() {
@@ -833,12 +832,6 @@ void Display::drawBottomBar() {
     bottomBar.setTextSize(1);
     bottomBar.setTextDatum(top_left);
 
-    // MP3 player: the bar IS the transport (1 vol- 2 prev 3 play/stop 4 next 5 vol+)
-    if (App::mode() == AppMode::MP3 && !App::windowHidden()) {
-        Mp3PlayerMode::drawBar(bottomBar);
-        return;
-    }
-
     char left[48];
     left[0] = '\0';
     char rightName[40];
@@ -999,9 +992,6 @@ void Display::drawBottomBar() {
             case AppMode::XFER:
                 XferMode::getStatusLine(left, sizeof(left));
                 break;
-            case AppMode::MP3:
-                Mp3PlayerMode::getStatusLine(left, sizeof(left));
-                break;
             case AppMode::INSPECTOR:
                 InspectorPig::getStatusLine(left, sizeof(left));
                 break;
@@ -1151,7 +1141,6 @@ void Display::update() {
     const bool hid = App::windowHidden();
     const bool coverFarm = !hid &&
         (App::mode() == AppMode::SPECTRUM || App::mode() == AppMode::USBSD ||
-         App::mode() == AppMode::MP3 ||
          App::mode() == AppMode::PIGPASS ||
          App::mode() == AppMode::INSPECTOR);
     if (!coverFarm) drawFarm();
@@ -1165,7 +1154,6 @@ void Display::update() {
         else if (App::mode() == AppMode::SPECTRUM) SpectrumMode::draw(mainCanvas);
         else if (App::mode() == AppMode::FILEMGR) FileMgrMode::draw(mainCanvas);
         else if (App::mode() == AppMode::XFER) XferMode::draw(mainCanvas);
-        else if (App::mode() == AppMode::MP3) Mp3PlayerMode::draw(mainCanvas);
         else if (App::mode() == AppMode::INSPECTOR) InspectorPig::draw(mainCanvas);
         else Menu::draw(mainCanvas);
         drawToast();

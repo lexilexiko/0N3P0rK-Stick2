@@ -56,9 +56,9 @@ static void enableNapt() {
     delay(150);
     ip_napt_enable(WiFi.softAPIP(), 1);
     s_napt = true;
-    Serial2.println("[NET] NAPT on (phone internet shared)");
+    Serial.println("[NET] NAPT on (phone internet shared)");
 #else
-    Serial2.println("[NET] NAPT not in this SDK - AP+STA keeps UI + Stamp internet");
+    Serial.println("[NET] NAPT not in this SDK - AP+STA keeps UI + Stamp internet");
 #endif
 }
 
@@ -67,7 +67,7 @@ static bool startAp(const char* ssid) {
     WiFi.mode(m);
     WiFi.softAPdisconnect(false);
     bool ok = WiFi.softAP(ssid, s_cfg.apPass, s_cfg.apChannel, 0, 8);
-    Serial2.printf("[NET] AP start: ssid=%s pass=%s ch=%u -> %s\n",
+    Serial.printf("[NET] AP start: ssid=%s pass=%s ch=%u -> %s\n",
                   ssid, s_cfg.apPass[0] ? s_cfg.apPass : "(open)",
                   s_cfg.apChannel, ok ? "OK" : "FAIL");
     return ok;
@@ -125,7 +125,7 @@ static void loadFromNvs() {
 void save() {
     nvs_handle_t h;
     if (nvs_open(NVS_NS, NVS_READWRITE, &h) != ESP_OK) {
-        Serial2.println("[NET] nvs_open RW failed");
+        Serial.println("[NET] nvs_open RW failed");
         return;
     }
     nvs_set_i32(h, KEY_MODE, (int32_t)s_cfg.mode);
@@ -139,7 +139,7 @@ void save() {
     nvs_set_str(h, KEY_OHC, s_cfg.ohcEmail);
     nvs_commit(h);
     nvs_close(h);
-    Serial2.println("[NET] saved");
+    Serial.println("[NET] saved");
 }
 
 static void ipToBuf(IPAddress ip, char* dst, size_t dstLen) {
@@ -198,10 +198,10 @@ static void applyMode() {
         WiFi.mode(WIFI_AP_STA);
         delay(50);
         bool apOk = WiFi.softAP(s_cfg.apSsid, s_cfg.apPass, s_cfg.apChannel, 0, 8);
-        Serial2.printf("[NET] APSTA AP=%s -> %s\n", s_cfg.apSsid, apOk ? "OK" : "FAIL");
+        Serial.printf("[NET] APSTA AP=%s -> %s\n", s_cfg.apSsid, apOk ? "OK" : "FAIL");
         if (s_cfg.staSsid[0]) {
             WiFi.begin(s_cfg.staSsid, s_cfg.staPass);
-            Serial2.printf("[NET] APSTA joining %s\n", s_cfg.staSsid);
+            Serial.printf("[NET] APSTA joining %s\n", s_cfg.staSsid);
         }
         enableNapt();
     }
@@ -229,7 +229,7 @@ bool setMode(Mode m) {
     if (m == Mode::STA) m = Mode::APSTA;
     if (m != Mode::AP && m != Mode::APSTA) return false;
     if (m == Mode::APSTA && !hasStaCreds()) {
-        Serial2.println("[NET] STA/APSTA requested but no creds");
+        Serial.println("[NET] STA/APSTA requested but no creds");
         return false;
     }
     s_cfg.mode = m;
@@ -347,7 +347,7 @@ bool setApSsidTemporary(const char* ssid) {
     s_liveApSsid[sizeof(s_liveApSsid) - 1] = '\0';
     s_liveApSsidActive = true;
     bool ok = startAp(s_liveApSsid);
-    Serial2.printf("[NET] live AP SSID=%s -> %s\n", s_liveApSsid, ok ? "OK" : "FAIL");
+    Serial.printf("[NET] live AP SSID=%s -> %s\n", s_liveApSsid, ok ? "OK" : "FAIL");
     return ok;
 }
 
@@ -355,7 +355,7 @@ bool restoreApRadio() {
     if (s_cfg.mode != Mode::AP && s_cfg.mode != Mode::APSTA) return false;
     s_liveApSsidActive = false;
     bool ok = startAp(s_cfg.apSsid);
-    Serial2.printf("[NET] AP radio restored ssid=%s ch=%u -> %s\n",
+    Serial.printf("[NET] AP radio restored ssid=%s ch=%u -> %s\n",
                   s_cfg.apSsid, s_cfg.apChannel, ok ? "OK" : "FAIL");
     return ok;
 }
@@ -364,13 +364,13 @@ bool resolveHost(const char* host, IPAddress& ip, uint8_t tries) {
     if (!host || !host[0]) return false;
     for (uint8_t i = 0; i < tries; i++) {
         if (WiFi.hostByName(host, ip) && ip != IPAddress()) {
-            Serial2.printf("[NET] dns %s -> %s\n", host, ip.toString().c_str());
+            Serial.printf("[NET] dns %s -> %s\n", host, ip.toString().c_str());
             return true;
         }
         delay(200);
         yield();
     }
-    Serial2.printf("[NET] dns fail %s\n", host);
+    Serial.printf("[NET] dns fail %s\n", host);
     return false;
 }
 
@@ -387,7 +387,7 @@ bool joinHome(uint32_t timeoutMs) {
     WiFi.mode(WIFI_STA);
     WiFi.setSleep(false);
     WiFi.begin(s_cfg.staSsid, s_cfg.staPass);
-    Serial2.printf("[NET] join home %s\n", s_cfg.staSsid);
+    Serial.printf("[NET] join home %s\n", s_cfg.staSsid);
 
     uint32_t t0 = millis();
     while (millis() - t0 < timeoutMs) {
@@ -397,14 +397,14 @@ bool joinHome(uint32_t timeoutMs) {
             resolveHost("wpa-sec.stanev.org", ip, 2);
             resolveHost("pwncrack.org", ip, 2);
             resolveHost("api.onlinehashcrack.com", ip, 2);
-            Serial2.printf("[NET] home ip %s rssi %d\n",
+            Serial.printf("[NET] home ip %s rssi %d\n",
                           WiFi.localIP().toString().c_str(), WiFi.RSSI());
             return true;
         }
         delay(150);
         yield();
     }
-    Serial2.println("[NET] join home timeout");
+    Serial.println("[NET] join home timeout");
     return false;
 }
 
