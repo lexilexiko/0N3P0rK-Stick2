@@ -1,6 +1,4 @@
 ﻿// 0N3P0rK - Tamagotchi pig + barn on M5StickC Plus 2
-
-#include <M5Unified.h>
 #include <M5Unified.h>
 #include <WiFi.h>
 #include <esp_heap_caps.h>
