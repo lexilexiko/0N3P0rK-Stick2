@@ -22,12 +22,9 @@
 #include "settings_menu.h"
 #include "../modes/evilpig.h"
 #include "../modes/pigpass.h"
-#include "../modes/blepig.h"
-#include "../modes/irport.h"
 #include "../modes/spectrum.h"
 #include "../modes/xfer.h"
 #include "../modes/filemgr.h"
-#include "../modes/inspectorpig.h"
 #include "boot_splash.h"
 #include <M5Unified.h>
 #include <string.h>
@@ -977,12 +974,6 @@ void Display::drawBottomBar() {
                     rightName[n] = '\0';
                 }
                 break;
-            case AppMode::BLE:
-                BlePigMode::getStatusLine(left, sizeof(left));
-                break;
-            case AppMode::IR:
-                IrPortMode::getStatusLine(left, sizeof(left));
-                break;
             case AppMode::SPECTRUM:
                 SpectrumMode::getStatusLine(left, sizeof(left));
                 break;
@@ -991,9 +982,6 @@ void Display::drawBottomBar() {
                 break;
             case AppMode::XFER:
                 XferMode::getStatusLine(left, sizeof(left));
-                break;
-            case AppMode::INSPECTOR:
-                InspectorPig::getStatusLine(left, sizeof(left));
                 break;
             case AppMode::TASKS:
                 strncpy(left, "^/v SELECT  ENT STOP  ESC BACK", sizeof(left) - 1);
@@ -1141,20 +1129,16 @@ void Display::update() {
     const bool hid = App::windowHidden();
     const bool coverFarm = !hid &&
         (App::mode() == AppMode::SPECTRUM || App::mode() == AppMode::USBSD ||
-         App::mode() == AppMode::PIGPASS ||
-         App::mode() == AppMode::INSPECTOR);
+         App::mode() == AppMode::PIGPASS);
     if (!coverFarm) drawFarm();
 
     if (App::mode() != AppMode::FARM && !hid) {
         if (App::mode() == AppMode::LOOT) LootMenu::draw(mainCanvas);
         else if (App::mode() == AppMode::EVILPIG) EvilPigMode::draw(mainCanvas);
         else if (App::mode() == AppMode::PIGPASS) PigpassMode::draw(mainCanvas);
-        else if (App::mode() == AppMode::BLE) BlePigMode::draw(mainCanvas);
-        else if (App::mode() == AppMode::IR) IrPortMode::draw(mainCanvas);
         else if (App::mode() == AppMode::SPECTRUM) SpectrumMode::draw(mainCanvas);
         else if (App::mode() == AppMode::FILEMGR) FileMgrMode::draw(mainCanvas);
         else if (App::mode() == AppMode::XFER) XferMode::draw(mainCanvas);
-        else if (App::mode() == AppMode::INSPECTOR) InspectorPig::draw(mainCanvas);
         else Menu::draw(mainCanvas);
         drawToast();
     } else if (hid) {

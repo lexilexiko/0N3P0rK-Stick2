@@ -112,14 +112,6 @@ static const char* const H_KEYS[] = {
     "BIND FARM / MENU SHORTCUTS.",
     "RADIO R. ENT SET. BS CLEAR."
 };
-static const char* const H_BLE[] = {
-    "APPLE / WIN / ANDROID FRAMES.",
-    "OWN DEVICES. ^/v FAMILY."
-};
-static const char* const H_IR[] = {
-    "IR PORT. POINT AT THE TV.",
-    "SPC FIRE. R NA/EU. E FILE."
-};
 static const char* const H_SPEC[] = {
     "2.4 SWEEP. LOBES AND FALL.",
     "ENT LOCK. SPC KICK. W WAKE."
@@ -162,28 +154,21 @@ static const char* const H_TWEAK[] = {
     "</> CYCLE  ENT NAME."
 };
 
-static const char* const H_INSPECT[] = {
-    "READS OUR HANDSHAKES.",
-    "ENT ONE  A ALL  REPORTS /inspector/"
-};
 static const RootItem ROOT[] = {
     {"/>", "ATTACK",  H_ATTACK,      2, RootType::GROUP,  GroupId::ATTACK,  0},
     {"[$", "LOOT",    H_LOOT,        2, RootType::DIRECT, GroupId::NONE,    4},
     {"^.", "PIG",     H_PIG,         2, RootType::DIRECT, GroupId::NONE,    7},
     {"()", "CONNECT", H_CONNECT_GRP, 2, RootType::GROUP,  GroupId::CONNECT, 0},
     {"::", "SET",     H_SET,         2, RootType::GROUP,  GroupId::SET,     0},
-    {"[]", "TASKS",   H_TASKS,       2, RootType::DIRECT, GroupId::NONE,    23},
-    {"?#", "INSPECT", H_INSPECT,     2, RootType::DIRECT, GroupId::NONE,    26}
+    {"[]", "TASKS",   H_TASKS,       2, RootType::DIRECT, GroupId::NONE,    23}
 };
-static const uint8_t ROOT_COUNT = 7;
+static const uint8_t ROOT_COUNT = 6;
 
 static const Item G_ATTACK[] = {
     {"/>", "LIGHT",   1,  H_LIGHT, 2},
     {"!!", "AGGRO",   2,  H_AGGRO, 2},
     {"EP", "EVILPIG", 9,  H_EVIL,  2},
     {"PP", "PIGPASS", 10, H_PASS,  2},
-    {"BL", "BLE",     13, H_BLE,   2},
-    {"IR", "IR PORT", 15, H_IR,    2},
     {"~)", "SPECTRUM",16, H_SPEC,  2},
     {"xx", "STOP",    3,  H_STOP,  2}
 };
@@ -299,14 +284,6 @@ static void doAction(uint8_t id) {
             SettingsMenu::show(SettingsPage::KEYS);
             App::setMode(AppMode::TUNE);
             break;
-        case 13:
-            if (Cap::isRunning()) Cap::stop();
-            App::setMode(AppMode::BLE);
-            break;
-        case 15:
-            if (Cap::isRunning()) Cap::stop();
-            App::setMode(AppMode::IR);
-            break;
         case 16:
             if (Cap::isRunning()) Cap::stop();
             App::setMode(AppMode::SPECTRUM);
@@ -329,11 +306,6 @@ static void doAction(uint8_t id) {
         case 20:
             if (Cap::isRunning()) Cap::stop();
             App::setMode(AppMode::FILEMGR);
-            break;
-        case 26:
-            // Reads the captures on SD вЂ” no radio, so stop capture first.
-            if (Cap::isRunning()) Cap::stop();
-            App::setMode(AppMode::INSPECTOR);
             break;
         case 9:
             if (Cap::isRunning()) Cap::stop();

@@ -210,8 +210,6 @@ static const Item KEYS[] = {
     {"LIGHT",    Kind::BIND, 1, 0, 0, 0},
     {"PIGPASS",  Kind::BIND, 2, 0, 0, 0},
     {"EVILPIG",  Kind::BIND, 3, 0, 0, 0},
-    {"BLE",      Kind::BIND, 4, 0, 0, 0},
-    {"IR PORT",  Kind::BIND, 5, 0, 0, 0},
     {"SPECTRUM", Kind::BIND, 6, 0, 0, 0},
     {"LOOT",     Kind::BIND, 7, 0, 0, 0},
     {"RADIO",    Kind::BIND, 8, 0, 0, 0},

@@ -4,11 +4,9 @@
 #include "keys.h"
 #include "../cap/sniffer.h"
 #include "../cap/hc22000.h"
-#include "../modes/blepig.h"
 #include "../modes/evilpig.h"
 #include "../modes/filemgr.h"
-#include "../modes/inspectorpig.h"
-#include "../modes/irport.h"
+#include "../modes/pigpass.h"
 #include "../modes/pigpass.h"
 #include "../modes/spectrum.h"
 #include "../modes/xfer.h"
@@ -24,8 +22,8 @@ namespace TaskManager {
 namespace {
 
 enum Row : uint8_t {
-    RADIO, WIFI, BLE, IR, EVILPIG, PIGPASS, SPECTRUM, USBSD, FILEMGR, XFER,
-    BADUSB, WPA_SYNC, PWN_SYNC, LOOT, INSPECTOR, STOP_ALL, ROW_COUNT
+    RADIO, WIFI, EVILPIG, PIGPASS, SPECTRUM, USBSD, FILEMGR, XFER,
+    BADUSB, WPA_SYNC, PWN_SYNC, LOOT, STOP_ALL, ROW_COUNT
 };
 
 static constexpr uint8_t VISIBLE_ROWS = 5;
@@ -43,9 +41,9 @@ bool s_sdAvailable = false;
 
 const char* rowName(Row row) {
     static const char* const names[] = {
-        "RADIO", "WIFI", "BLE", "IR", "EVILPIG", "PIGPASS", "SPECTRUM",
+        "RADIO", "WIFI", "EVILPIG", "PIGPASS", "SPECTRUM",
         "USB SD", "FILES", "XFER", "BADUSB", "WPA-SEC", "PWNCRACK",
-        "LOOT", "INSPECT", "STOP ALL"
+        "LOOT", "STOP ALL"
     };
     return names[row];
 }
@@ -55,8 +53,6 @@ bool rowActive(Row row) {
         case STOP_ALL: return false;
         case RADIO: return Cap::isRunning();
         case WIFI: return WiFi.getMode() != WIFI_OFF;
-        case BLE: return BlePigMode::isRunning();
-        case IR: return IrPortMode::isRunning();
         case EVILPIG: return EvilPigMode::isRunning();
         case PIGPASS: return PigpassMode::isRunning();
         case SPECTRUM: return SpectrumMode::isRunning();
@@ -65,7 +61,6 @@ bool rowActive(Row row) {
         case WPA_SYNC: return WPASec::isBusy();
         case PWN_SYNC: return Pwncrack::isBusy();
         case LOOT: return LootMenu::isActive();
-        case INSPECTOR: return InspectorPig::isRunning();
         case ROW_COUNT: return false;
     }
     return false;
@@ -125,9 +120,6 @@ void rowInfo(Row row, char* out, size_t n) {
             else snprintf(out, n, "ON");
             break;
         }
-        case BLE:
-            snprintf(out, n, "BURSTS %lu", (unsigned long)BlePigMode::getBursts());
-            break;
         case PIGPASS:
             snprintf(out, n, "%s", PigpassMode::getCurrentTry()[0] ? "CRACKING" : "ACTIVE");
             break;
@@ -157,8 +149,6 @@ void stopRow(Row row) {
             WiFi.disconnect(true, false);
             WiFi.mode(WIFI_OFF);
             break;
-        case BLE: if (BlePigMode::isRunning()) BlePigMode::stop(); break;
-        case IR: if (IrPortMode::isRunning()) IrPortMode::stop(); break;
         case EVILPIG: if (EvilPigMode::isRunning()) EvilPigMode::stop(); break;
         case PIGPASS: if (PigpassMode::isRunning()) PigpassMode::stop(); break;
         case SPECTRUM: if (SpectrumMode::isRunning()) SpectrumMode::stop(); break;
@@ -168,17 +158,13 @@ void stopRow(Row row) {
         case PWN_SYNC:
             break;
         case LOOT: if (LootMenu::isActive()) LootMenu::hide(); break;
-        case INSPECTOR: if (InspectorPig::isRunning()) InspectorPig::stop(); break;
         case STOP_ALL:
             Cap::stop();
-            if (BlePigMode::isRunning()) BlePigMode::stop();
-            if (IrPortMode::isRunning()) IrPortMode::stop();
             if (EvilPigMode::isRunning()) EvilPigMode::stop();
             if (PigpassMode::isRunning()) PigpassMode::stop();
             if (SpectrumMode::isRunning()) SpectrumMode::stop();
             if (FileMgrMode::isRunning()) FileMgrMode::stop();
             if (XferMode::isRunning()) XferMode::stop();
-            if (InspectorPig::isRunning()) InspectorPig::stop();
             if (LootMenu::isActive()) LootMenu::hide();
             if (!networkSyncActive()) {
                 WiFi.disconnect(true, false);

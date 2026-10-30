@@ -11,7 +11,6 @@
 #include "../audio/sfx.h"
 #include "../cap/sniffer.h"
 #include "../cap/capture_name.h"
-#include "../modes/inspectorpig.h"
 #include "../sync/net_io.h"
 #include "../sync/tls.h"
 #include <M5Unified.h>
@@ -821,7 +820,7 @@ void LootMenu::runInspector(bool allFiles) {
         Display::showToast("CHECKING ALL...", 30000);
         paintLoot();
         SFX::play(SFX::MENU_CLICK);
-        InspectorPig::checkAll(msg, sizeof(msg));
+        snprintf(msg, sizeof(msg), "INSPECTOR REMOVED");
     } else {
         if (!count || selected >= count || !s_rows[selected].filename[0]) {
             Display::showToast("NO FILE", 900);
@@ -829,7 +828,7 @@ void LootMenu::runInspector(bool allFiles) {
         }
         Display::showToast("CHECKING...", 15000);
         paintLoot();
-        InspectorPig::checkOne(s_rows[selected].filename, msg, sizeof(msg));
+        snprintf(msg, sizeof(msg), "INSPECTOR REMOVED");
     }
 
     Display::showToast(msg[0] ? msg : "CHECK FAIL", 1800);

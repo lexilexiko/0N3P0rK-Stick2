@@ -12,15 +12,12 @@ enum class AppMode : uint8_t {
     TUNE,
     EVILPIG,
     PIGPASS,
-    BLE,
-    IR,
     SPECTRUM,
     USBSD,
     FILEMGR,
     XFER,
     BADUSB,
-    TASKS,
-    INSPECTOR
+    TASKS
 };
 
 namespace App {
