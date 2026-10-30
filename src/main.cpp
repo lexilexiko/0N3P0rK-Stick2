@@ -52,6 +52,7 @@ void setup() {
     auto cfg = M5.config();
     M5.begin(cfg);
     M5.Display.setBrightness(255);  // Явно задаем максимальную яркость (NVS может хранить 0)
+    Serial.println("!! Brightness set to 255");  // Диагностика: код доходит до aquí
     Board::startKeyboard();
 
     setupHeapLayout();
