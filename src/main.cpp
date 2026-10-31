@@ -1,7 +1,9 @@
 ﻿// 0N3P0rK - Tamagotchi pig + barn on M5StickC Plus 2
+
 #include <M5Unified.h>
 #include <WiFi.h>
 #include <esp_heap_caps.h>
+#include <nvs.h>
 #include "build_info.h"
 #include "core/config.h"
 #include "core/xp.h"
@@ -19,6 +21,26 @@
 #include "modes/pigpass.h"
 #include "ui/keys.h"
 
+static void bootLed(bool on) {
+    // StickC Plus 2 red LED is GPIO 19, active low.
+    pinMode(19, OUTPUT);
+    digitalWrite(19, on ? LOW : HIGH);
+}
+
+static void bootBlinks(int n) {
+    for (int i = 0; i < n; ++i) {
+        bootLed(true);
+        delay(140);
+        bootLed(false);
+        delay(140);
+    }
+}
+
+static void bootMark(const char* step) {
+    Serial.println(step);
+    Serial.flush();
+}
+
 static void preInitWiFiDriverEarly() {
     WiFi.persistent(false);
     WiFi.mode(WIFI_STA);
@@ -30,44 +52,93 @@ static void preInitWiFiDriverEarly() {
 static void setupHeapLayout() {
     size_t beforeLargest = heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
     Serial.printf("[BOOT] pre-fence largest=%u\n", (unsigned)beforeLargest);
+    Serial.flush();
 
-    static constexpr size_t kFenceSize = 80000;
-    void* fence = heap_caps_malloc(kFenceSize, MALLOC_CAP_8BIT);
+    // PSRAM on the Plus2 module is not enabled in this build, so this
+    // fence comes from internal RAM. 80 KB here can reset the chip before
+    // anything is drawn. Take at most a third of the largest block.
+    size_t fenceSize = beforeLargest / 3;
+    if (fenceSize > 48000) fenceSize = 48000;
+    void* fence = fenceSize >= 4096
+        ? heap_caps_malloc(fenceSize, MALLOC_CAP_8BIT) : nullptr;
     preInitWiFiDriverEarly();
     if (fence) heap_caps_free(fence);
 
     Serial.printf("[BOOT] post-fence free=%u largest=%u\n",
                   (unsigned)ESP.getFreeHeap(),
                   (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+    Serial.flush();
 }
 
 void setup() {
+    // Plus2 dies on battery unless HOLD stays high, and the backlight is
+    // GPIO 27 (not the AXP chip of the old StickC).
+    pinMode(4, OUTPUT);
+    digitalWrite(4, HIGH);
+    pinMode(27, OUTPUT);
+    digitalWrite(27, HIGH);
+    bootBlinks(1);   // 1 blink: CPU is running, setup() started
+
     Serial.begin(115200);
-    delay(120);
+    delay(80);
     Serial.println();
     Serial.printf(">>> %s v%s build=%s\n", ON3PORK_NAME, ON3PORK_VERSION, ON3PORK_BUILD);
+    Serial.flush();
+
+    // A previous boot may have saved "this is a StickC" into M5GFX NVS.
+    // That skips the Plus2 probe and leaves the panel dark.
+    nvs_handle_t nvs;
+    if (nvs_open("M5GFX", NVS_READWRITE, &nvs) == ESP_OK) {
+        nvs_erase_key(nvs, "AUTODETECT");
+        nvs_commit(nvs);
+        nvs_close(nvs);
+    }
+    bootMark("[BOOT] before M5.begin");
 
     auto cfg = M5.config();
+    // If the panel probe misses, the default fallback is Atom Lite and
+    // M5.begin() then scans every Grove display (external_display = 0xFFFF).
+    cfg.fallback_board = m5::board_t::board_M5StickCPlus2;
+    cfg.external_display_value = 0;
     M5.begin(cfg);
-    M5.Display.setBrightness(255);  // Явно задаем максимальную яркость (NVS может хранить 0)
-    Serial.println("!! Brightness set to 255");  // Диагностика: код доходит до aquí
+    // Autodetect restores GPIO state. Hold must stay high or Plus2 cuts power.
+    pinMode(4, OUTPUT);
+    digitalWrite(4, HIGH);
+    bootBlinks(2);   // 2 blinks: M5.begin returned
+    Serial.printf("[BOOT] M5 board=%d (Plus2 is 5)\n", (int)M5.getBoard());
+    M5.Display.setRotation(1);
+    M5.Display.setBrightness(255);
+    M5.Display.fillScreen(TFT_RED);
+    M5.Display.setTextColor(TFT_WHITE, TFT_RED);
+    M5.Display.setTextSize(2);
+    M5.Display.setCursor(8, 40);
+    M5.Display.print("BOOT");
+    Serial.printf("[LCD] %dx%d\n", M5.Display.width(), M5.Display.height());
+    Serial.flush();
+    delay(400);
     Board::startKeyboard();
 
     setupHeapLayout();
     yield();
 
     if (!Storage::begin()) {
-        Serial.println("[BOOT] LittleFS failed - continuing");
+        bootMark("[BOOT] LittleFS failed - continuing");
+    } else {
+        bootMark("[BOOT] LittleFS ok");
     }
     Keys::begin();
     Serial.printf("[BOOT] board=%s\n", Board::modelLabel());
+    Serial.flush();
 
     Config::init();
     XP::begin();
-    M5.Display.setBrightness(Config::personality().brightness * 255 / 100);
+    M5.Display.setBrightness(255);
 
+    bootMark("[BOOT] display init");
     Display::init();
+    bootBlinks(3);   // 3 blinks: canvas exists
     SFX::init();
+    bootMark("[BOOT] avatar");
     Avatar::init();
     Display::showBootSplash();
     Display::refreshBrightness();
@@ -76,6 +147,7 @@ void setup() {
     App::begin();
     yield();
 
+    bootMark("[BOOT] net");
     Net::begin();
     Storage::loadKeysIntoNet();
     Cap::begin();
@@ -85,11 +157,22 @@ void setup() {
     Net::Status s = Net::status();
     Serial.printf("[BOOT] wifi mode ssid=%s ip=%s\n", s.ssid, s.ip);
     Serial.printf("[BOOT] pig=%s ready\n", Config::personality().name);
+    Serial.flush();
+    bootLed(false);
 }
 
 static unsigned long s_lastHeapLog = 0;
+static unsigned long s_ledTick = 0;
+static bool s_ledOn = false;
 
 void loop() {
+    // Heartbeat: LED keeps ticking only if loop() is actually running.
+    if (millis() - s_ledTick > 1000) {
+        s_ledTick = millis();
+        s_ledOn = !s_ledOn;
+        bootLed(s_ledOn);
+    }
+
     M5.update();
     Keys::update();
     App::loop();
@@ -105,6 +188,7 @@ void loop() {
                       (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT),
                       Cap::runMode() == Cap::RunMode::Aggressive ? "AGG" :
                       (Cap::isRunning() ? "LITE" : "off"));
+        Serial.flush();
     }
     delay(5);
     yield();
