@@ -77,7 +77,6 @@ private:
     static PigpassHsTab hsTab;   // only used on SELECT_HANDSHAKE
     static uint16_t selectedIndex;
     static uint16_t scrollOffset;
-    static bool keyWasPressed;
     static bool uiDirty;
 
     // Screen shows 5 rows; scroll for the rest. List capacity matches Cap HS limit.

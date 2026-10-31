@@ -42,7 +42,6 @@ std::vector<PigpassFileEntry> PigpassMode::files;
 PigpassHsTab PigpassMode::hsTab = PigpassHsTab::PCAP;
 uint16_t PigpassMode::selectedIndex = 0;
 uint16_t PigpassMode::scrollOffset = 0;
-bool PigpassMode::keyWasPressed = false;
 bool PigpassMode::uiDirty = true;
 bool PigpassMode::maskMode = false;
 uint8_t PigpassMode::maskCharsetId = 0;
@@ -1198,7 +1197,6 @@ void PigpassMode::start() {
     applyMaskCharset();
     startTime = millis();
     lastUpdateTime = startTime;
-    keyWasPressed = true;  // ignore Enter that opened this mode
     uiDirty = true;
     freePbkdfCtx();
     resetWordlistBuffer();
@@ -1248,7 +1246,6 @@ void PigpassMode::transitionState(PigpassState newState) {
     Serial.printf("[PIGPASS] State transition: %d -> %d\n", (int)state, (int)newState);
     state = newState;
     uiDirty = true;
-    keyWasPressed = true;  // debounce across screens
 
     if (newState == PigpassState::SELECT_MASK) {
         applyMaskCharset();
@@ -1902,6 +1899,11 @@ void PigpassMode::drawMaskSetup(M5Canvas& canvas) {
         canvas.drawString(buf, 4, 84);
     }
 
+    canvas.setTextColor(UiStyle::DIM);
+    canvas.drawString("A/B charset  hold A/B length", 4, 101);
+    canvas.setTextColor(UiStyle::CYAN);
+    canvas.drawString("PWR START   HOLD PWR BACK", 4, 114);
+
 }
 
 void PigpassMode::drawUI(M5Canvas& canvas) {
@@ -2007,66 +2009,65 @@ void PigpassMode::drawUI(M5Canvas& canvas) {
 }
 
 void PigpassMode::handleMaskInput() {
-    auto keys = ButtonMapper::keysState();
-    bool back = ButtonMapper::back();
-    bool up = ButtonMapper::isKeyPressed(';');
-    bool down = ButtonMapper::isKeyPressed('.');
-    bool lenDown = ButtonMapper::isKeyPressed(',');
-    bool lenUp = ButtonMapper::isKeyPressed('/');
-
-    if (back) {
+    // StickC Plus 2 controls:
+    // A/B short: change character set
+    // A long: increase mask length
+    // B long: decrease mask length
+    // Power short: START
+    // Power long: BACK
+    if (ButtonMapper::back()) {
         transitionState(PigpassState::SELECT_WORDLIST);
         return;
     }
-    if (up) {
-        maskCharsetId = (uint8_t)((maskCharsetId + 5) % 6);  // prev
+
+    if (ButtonMapper::longA()) {
+        if (maskLen < 12) {
+            ++maskLen;
+            uiDirty = true;
+        }
+        return;
+    }
+
+    if (ButtonMapper::longB()) {
+        if (maskLen > 8) {
+            --maskLen;
+            uiDirty = true;
+        }
+        return;
+    }
+
+    if (ButtonMapper::tapB()) {
+        maskCharsetId = (uint8_t)((maskCharsetId + 5) % 6);
         applyMaskCharset();
         uiDirty = true;
         return;
     }
-    if (down) {
+
+    if (ButtonMapper::tapA()) {
         maskCharsetId = (uint8_t)((maskCharsetId + 1) % 6);
         applyMaskCharset();
         uiDirty = true;
         return;
     }
-    if (lenDown && maskLen > 8) {
-        maskLen--;
-        uiDirty = true;
-        return;
-    }
-    if (lenUp && maskLen < 12) {
-        maskLen++;
-        uiDirty = true;
-        return;
-    }
-    if (keys.enter) {
+
+    if (ButtonMapper::ok()) {
         beginMaskRun();
     }
 }
 
 void PigpassMode::handleInput() {
-    bool anyPressed = ButtonMapper::isPressed();
-    if (!anyPressed) {
-        keyWasPressed = false;
-        return;
-    }
-    if (keyWasPressed) return;
-    keyWasPressed = true;
-
-    auto keys = ButtonMapper::keysState();
-    bool back = ButtonMapper::back();
-    bool up = ButtonMapper::isKeyPressed(';');
-    bool down = ButtonMapper::isKeyPressed('.');
-
+    // Use button events, not the physical-down state. Power's short-click
+    // event is generated on release, when isPressedAny() is already false.
+    // The old pressed/latch gate therefore swallowed START/PAUSE/RESUME.
     if (state == PigpassState::SELECT_MASK) {
         handleMaskInput();
         return;
     }
 
     // File selection screens
-    if (state == PigpassState::SELECT_HANDSHAKE || state == PigpassState::SELECT_WORDLIST) {
-        if (back) {
+    if (state == PigpassState::SELECT_HANDSHAKE ||
+        state == PigpassState::SELECT_WORDLIST) {
+        if (ButtonMapper::back()) {
             if (state == PigpassState::SELECT_WORDLIST) {
                 transitionState(PigpassState::SELECT_HANDSHAKE);
             } else {
@@ -2075,7 +2076,7 @@ void PigpassMode::handleInput() {
             return;
         }
 
-        // Handshake tabs: , / like LOOT (WPASEC / PWNCRACK)
+        // Existing tab-switch handling is retained.
         if (state == PigpassState::SELECT_HANDSHAKE &&
             (ButtonMapper::isKeyPressed(',') ||
              ButtonMapper::isKeyPressed('/'))) {
@@ -2087,9 +2088,9 @@ void PigpassMode::handleInput() {
             return;
         }
 
-        if (up) {
+        if (ButtonMapper::prev()) {
             if (selectedIndex > 0) {
-                selectedIndex--;
+                --selectedIndex;
                 if (selectedIndex < scrollOffset) {
                     scrollOffset = selectedIndex;
                 }
@@ -2098,9 +2099,9 @@ void PigpassMode::handleInput() {
             return;
         }
 
-        if (down) {
+        if (ButtonMapper::next()) {
             if (!files.empty() && selectedIndex + 1 < files.size()) {
-                selectedIndex++;
+                ++selectedIndex;
                 if (selectedIndex >= scrollOffset + VISIBLE_ITEMS) {
                     scrollOffset = selectedIndex - VISIBLE_ITEMS + 1;
                 }
@@ -2109,7 +2110,7 @@ void PigpassMode::handleInput() {
             return;
         }
 
-        if (keys.enter) {
+        if (ButtonMapper::ok()) {
             selectCurrentFile();
         }
         return;
@@ -2117,14 +2118,14 @@ void PigpassMode::handleInput() {
 
     // Running / paused / done
     if (state == PigpassState::RUNNING) {
-        if (keys.enter) {
+        if (ButtonMapper::ok()) {
             s_crackPause = true;
             attempts = s_attempts;
             saveCheckpoint();
             transitionState(PigpassState::PAUSED);
             return;
         }
-        if (back) {
+        if (ButtonMapper::back()) {
             stop();
             return;
         }
@@ -2132,15 +2133,15 @@ void PigpassMode::handleInput() {
     }
 
     if (state == PigpassState::PAUSED) {
-        if (keys.enter) {
-            // Resume with adjusted start so elapsed stays continuous
+        if (ButtonMapper::ok()) {
+            // Resume with adjusted start so elapsed stays continuous.
             startTime = millis() - (elapsedSeconds * 1000UL);
             lastUpdateTime = millis();
             s_crackPause = false;
             transitionState(PigpassState::RUNNING);
             return;
         }
-        if (back) {
+        if (ButtonMapper::back()) {
             stop();
             return;
         }
@@ -2148,7 +2149,7 @@ void PigpassMode::handleInput() {
     }
 
     if (state == PigpassState::DONE) {
-        if (keys.enter || back) {
+        if (ButtonMapper::ok() || ButtonMapper::back()) {
             stop();
         }
     }
@@ -2276,13 +2277,13 @@ void PigpassMode::getStatusLine(char* out, size_t len) {
                 snprintf(out, len, "A/B MOVE  PWR SELECT  HOLD PWR BACK");
                 return;
             case PigpassState::SELECT_MASK:
-                snprintf(out, len, "A/B SET CHARSET  PWR START  HOLD PWR BACK");
+                snprintf(out, len, "A/B CHARSET  HOLD A/B LEN  PWR START");
                 return;
             case PigpassState::RUNNING:
-                snprintf(out, len, "PWR PAUSE  HOLD PWR SAVE AND EXIT");
+                snprintf(out, len, "PWR PAUSE  HOLD PWR SAVE/EXIT");
                 return;
             case PigpassState::PAUSED:
-                snprintf(out, len, "PWR RESUME  HOLD PWR SAVE AND EXIT");
+                snprintf(out, len, "PWR RESUME  HOLD PWR SAVE/EXIT");
                 return;
             case PigpassState::DONE:
                 snprintf(out, len, "PWR OR HOLD PWR EXIT");
