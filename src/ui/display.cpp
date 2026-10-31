@@ -1136,7 +1136,7 @@ void Display::update() {
         mode == AppMode::WIFI || mode == AppMode::PIG ||
         mode == AppMode::TUNE || mode == AppMode::EVILPIG ||
         mode == AppMode::PIGPASS || mode == AppMode::SPECTRUM ||
-        mode == AppMode::USBSD || mode == AppMode::FILEMGR ||
+        mode == AppMode::FILEMGR ||
         mode == AppMode::XFER || mode == AppMode::TASKS;
     if (hid || !opaque) drawFarm();
 
