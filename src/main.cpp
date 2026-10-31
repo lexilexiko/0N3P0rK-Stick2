@@ -106,7 +106,7 @@ void setup() {
     digitalWrite(4, HIGH);
     bootBlinks(2);   // 2 blinks: M5.begin returned
     Serial.printf("[BOOT] M5 board=%d (Plus2 is 5)\n", (int)M5.getBoard());
-    M5.Display.setRotation(1);
+    M5.Display.setRotation(3);
     M5.Display.setBrightness(255);
     M5.Display.fillScreen(TFT_RED);
     M5.Display.setTextColor(TFT_WHITE, TFT_RED);

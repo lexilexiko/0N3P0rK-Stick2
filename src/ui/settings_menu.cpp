@@ -1177,7 +1177,7 @@ const char* bottomHint() {
             if (s_page == SettingsPage::FLORA && s_idx < sizeof(H_FLORA) / sizeof(H_FLORA[0]))
                 return H_FLORA[s_idx];
         }
-        if (it[s_idx].kind == Kind::TOGGLE) return "ENT TOGGLE  ^/v MOVE  ESC BACK";
+        if (it[s_idx].kind == Kind::TOGGLE) return "A/B MOVE  PWR TOGGLE  HOLD BACK";
         if (it[s_idx].kind == Kind::TEXT)
             return it[s_idx].id == 16 ? "ENT TYPE CODE  ESC BACK" : "ENT TYPE NAME  ESC BACK";
         if (it[s_idx].kind == Kind::ACTION) {
@@ -1189,9 +1189,9 @@ const char* bottomHint() {
                 return "ENT OPEN FLORA  ESC BACK";
             return "ENT RESET RADIO  ESC BACK";
         }
-        return "ENT EDIT  ^/v MOVE  ESC BACK";
+        return "A/B MOVE  PWR EDIT  HOLD BACK";
     }
-    return "^/v MOVE  ENT SELECT  ESC BACK";
+    return "A/B MOVE  PWR OK  HOLD BACK";
 }
 
 static void updateConnect() {

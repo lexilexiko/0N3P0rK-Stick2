@@ -237,7 +237,7 @@ uint8_t* Display::mainCanvasBuffer() { return s_mainCanvasBuf; }
 size_t Display::mainCanvasBufferSize() { return kMainCanvasBytes; }
 
 void Display::init() {
-    M5.Display.setRotation(1);
+    M5.Display.setRotation(3);
     M5.Display.setColorDepth(8);
     M5.Display.fillScreen(COLOR_BG);
     M5.Display.setTextColor(COLOR_FG);
@@ -945,7 +945,7 @@ void Display::drawBottomBar() {
                 if (CardsTable::isActive())
                     CardsTable::getStatusLine(left, sizeof(left));
                 else
-                    left[0] = '\0';
+                    strncpy(left, "HOLD A/B WALK  PWR MENU", sizeof(left) - 1);
                 break;
             case AppMode::LOOT:
                 strncpy(left, LootMenu::getBottomHint(), sizeof(left) - 1);

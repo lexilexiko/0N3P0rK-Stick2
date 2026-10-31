@@ -370,7 +370,9 @@ void onEnter(AppMode mode) {
 const char* hint() {
     if (s_editing) return "TYPE  ENT SAVE  ESC CANCEL";
     if (App::mode() == AppMode::MENU) {
-        return s_group == GroupId::NONE ? "^/v  ENT OPEN  ESC FARM" : "^/v  ENT  ESC BACK";
+        return s_group == GroupId::NONE
+            ? "A/B MOVE  PWR OPEN  HOLD BACK"
+            : "A/B MOVE  PWR OK  HOLD BACK";
     }
     if (App::mode() == AppMode::PIG || App::mode() == AppMode::TUNE ||
         App::mode() == AppMode::WIFI)
@@ -437,35 +439,29 @@ void update() {
     if (!s_active || App::mode() != AppMode::MENU) return;
     if (!keyNewPress(s_keyWas)) return;
 
-    auto keys = Keys::keysState();
-    bool esc = keyEsc();
-    if (esc) {
+    if (Keys::back()) {
         if (s_group != GroupId::NONE) closeModal();
         else App::setMode(AppMode::FARM);
         return;
     }
-    if (tryHotkey()) return;
+
+    auto moveSel = [](int dir, uint8_t& idx, uint8_t& scroll, uint8_t n, uint8_t vis) {
+        if (n == 0) return;
+        int nidx = (int)idx + dir;
+        if (nidx < 0) nidx = (int)n - 1;
+        if (nidx >= (int)n) nidx = 0;
+        idx = (uint8_t)nidx;
+        if (idx < scroll) scroll = idx;
+        else if (idx >= scroll + vis) scroll = (uint8_t)(idx + 1 - vis);
+        s_openMs = millis();
+        SFX::play(SFX::MENU_CLICK);
+    };
 
     if (s_group != GroupId::NONE) {
         uint8_t n = groupSize(s_group);
-        if (Keys::btnB()) {          // ';' = prev item
-            if (s_modalIdx > 0) {
-                s_modalIdx--;
-                if (s_modalIdx < s_modalScroll) s_modalScroll = s_modalIdx;
-                s_openMs = millis();
-                SFX::play(SFX::MENU_CLICK);
-            }
-        }
-        if (Keys::btnA()) {          // '.' = next item
-            if (s_modalIdx + 1 < n) {
-                s_modalIdx++;
-                if (s_modalIdx >= s_modalScroll + MODAL_VIS)
-                    s_modalScroll = (uint8_t)(s_modalIdx - MODAL_VIS + 1);
-                s_openMs = millis();
-                SFX::play(SFX::MENU_CLICK);
-            }
-        }
-        if (keys.enter || Keys::btnA()) {
+        if (Keys::prev()) moveSel(-1, s_modalIdx, s_modalScroll, n, MODAL_VIS);
+        else if (Keys::next()) moveSel(1, s_modalIdx, s_modalScroll, n, MODAL_VIS);
+        else if (Keys::ok()) {
             SFX::play(SFX::MENU_CLICK);
             const Item* it = groupItems(s_group);
             uint8_t id = (it && s_modalIdx < n) ? it[s_modalIdx].actionId : 0;
@@ -475,24 +471,9 @@ void update() {
         return;
     }
 
-    if (Keys::btnB()) {              // ';' = prev root item
-        if (s_rootIdx > 0) {
-            s_rootIdx--;
-            if (s_rootIdx < s_rootScroll) s_rootScroll = s_rootIdx;
-            s_openMs = millis();
-            SFX::play(SFX::MENU_CLICK);
-        }
-    }
-    if (Keys::btnA()) {              // '.' = next root item
-        if (s_rootIdx + 1 < ROOT_COUNT) {
-            s_rootIdx++;
-            if (s_rootIdx >= s_rootScroll + VISIBLE)
-                s_rootScroll = (uint8_t)(s_rootIdx - VISIBLE + 1);
-            s_openMs = millis();
-            SFX::play(SFX::MENU_CLICK);
-        }
-    }
-    if (keys.enter || Keys::btnA()) {
+    if (Keys::prev()) moveSel(-1, s_rootIdx, s_rootScroll, ROOT_COUNT, VISIBLE);
+    else if (Keys::next()) moveSel(1, s_rootIdx, s_rootScroll, ROOT_COUNT, VISIBLE);
+    else if (Keys::ok()) {
         SFX::play(SFX::MENU_CLICK);
         const RootItem& it = ROOT[s_rootIdx];
         if (it.type == RootType::GROUP) {

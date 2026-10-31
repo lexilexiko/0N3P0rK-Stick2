@@ -208,11 +208,12 @@ static void farmPoll() {
     if (Credits::isPlaying()) return;  // unskippable credits
     if (CardsTable::isActive()) return;  // duel owns keys + draw
     animTestPoll();
-    bool left  = Keys::btnB() || Keys::isKeyPressed(',');
-    bool right = Keys::btnA() || Keys::isKeyPressed('/');
-    bool jumpKey = Keys::btnA() || Keys::isKeyPressed(';');
-    bool attackKey = Keys::btnA() || Keys::isKeyPressed(' ');
-    bool sitKey = Keys::btnB() || Keys::isKeyPressed('.');
+    // Hold walks. A short tap jumps, a short B tap sits. PWR is the menu.
+    bool left  = Keys::holdB();
+    bool right = Keys::holdA();
+    bool jumpKey = Keys::tapA();
+    bool attackKey = false;
+    bool sitKey = Keys::tapB();
 
     static bool idleJumpWas = false;
     static bool idleAttackWas = false;
@@ -282,6 +283,11 @@ void loop() {
         Screenshot::poll();
 
     if (s_mode == AppMode::FARM || windowHidden()) farmPoll();
+    // PWR click is reported on release, when no button is held anymore.
+    if (s_mode == AppMode::FARM && Keys::ok()) {
+        setMode(AppMode::MENU);
+        return;
+    }
 
     // Backspace = minimize overlay, except in file manager where it navigates back.
     if (overlayMode() && s_mode != AppMode::FILEMGR &&
@@ -340,14 +346,7 @@ void loop() {
     char typed = Keys::typedChar();
     bool back = keyEsc();
 
-    if (s_mode == AppMode::FARM) {
-        if (back) {
-            setMode(AppMode::MENU);
-            return;
-        }
-        Menu::tryHotkey();
-        return;
-    }
+    if (s_mode == AppMode::FARM) return;
 
     if (back) {
         setMode(AppMode::MENU);
