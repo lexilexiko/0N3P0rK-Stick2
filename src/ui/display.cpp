@@ -382,9 +382,10 @@ bool Display::showConfirmBox(const char* title, const char* message) {
     M5Canvas& c = mainCanvas;
     char savedHint[sizeof(bottomHint)];
     memcpy(savedHint, bottomHint, sizeof(savedHint));
-    setBottomHint("ENT YES  ESC NO");
+    setBottomHint("A YES  B NO");
     for (;;) {
         M5.update();
+        Keys::update();
         c.fillSprite(UiStyle::BG);
         c.fillRoundRect(12, 18, 216, 72, 6, 0x18C3);
         c.drawRoundRect(12, 18, 216, 72, 6, UiStyle::GOLD);
@@ -399,16 +400,13 @@ bool Display::showConfirmBox(const char* title, const char* message) {
         drawBottomBar();
         pushAll();
 
-        if (Keys::isPressedAny() && Keys::isChanged()) {
-            auto k = Keys::keysState();
-            if (k.enter || Keys::btnA()) {
-                memcpy(bottomHint, savedHint, sizeof(bottomHint));
-                return true;
-            }
-            if (keyEsc()) {
-                memcpy(bottomHint, savedHint, sizeof(bottomHint));
-                return false;
-            }
+        if (Keys::ok() || Keys::tapA() || Keys::next()) {
+            memcpy(bottomHint, savedHint, sizeof(bottomHint));
+            return true;
+        }
+        if (Keys::tapB() || Keys::prev() || Keys::back()) {
+            memcpy(bottomHint, savedHint, sizeof(bottomHint));
+            return false;
         }
         delay(16);
     }
@@ -945,7 +943,7 @@ void Display::drawBottomBar() {
                 if (CardsTable::isActive())
                     CardsTable::getStatusLine(left, sizeof(left));
                 else
-                    strncpy(left, "HOLD A/B WALK  PWR MENU", sizeof(left) - 1);
+                    strncpy(left, "A/B HOLD WALK  TAP PWR MENU", sizeof(left) - 1);
                 break;
             case AppMode::LOOT:
                 strncpy(left, LootMenu::getBottomHint(), sizeof(left) - 1);
@@ -1127,10 +1125,17 @@ void Display::update() {
     }
 
     const bool hid = App::windowHidden();
-    const bool coverFarm = !hid &&
-        (App::mode() == AppMode::SPECTRUM || App::mode() == AppMode::USBSD ||
-         App::mode() == AppMode::PIGPASS);
-    if (!coverFarm) drawFarm();
+    const AppMode mode = App::mode();
+    // These screens fill the canvas themselves. Drawing the farm first
+    // still simulates and paints the whole scene, then throws it away.
+    const bool opaque =
+        mode == AppMode::MENU || mode == AppMode::LOOT ||
+        mode == AppMode::WIFI || mode == AppMode::PIG ||
+        mode == AppMode::TUNE || mode == AppMode::EVILPIG ||
+        mode == AppMode::PIGPASS || mode == AppMode::SPECTRUM ||
+        mode == AppMode::USBSD || mode == AppMode::FILEMGR ||
+        mode == AppMode::XFER || mode == AppMode::TASKS;
+    if (hid || !opaque) drawFarm();
 
     if (App::mode() != AppMode::FARM && !hid) {
         if (App::mode() == AppMode::LOOT) LootMenu::draw(mainCanvas);

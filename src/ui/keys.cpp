@@ -10,6 +10,8 @@ static bool s_aEdge = false, s_bEdge = false, s_pwrEdge = false;
 static bool s_aClick = false, s_bClick = false, s_pwrClick = false;
 static bool s_pwrHold = false;
 static bool s_prevA = false, s_prevB = false, s_prevPwr = false;
+// A press that already walked must not also jump/sit when it is released.
+static bool s_aWalked = false, s_bWalked = false;
 
 void begin() {
     M5.update();
@@ -19,17 +21,24 @@ void begin() {
 }
 
 void update() {
-    M5.update();
+    // Caller samples the buttons first (loop calls M5.update() immediately
+    // before this). wasPressed / wasClicked / wasHold live for that one
+    // update only; a second M5.update() here wipes them, so the menu never
+    // sees a click. Do not add another M5.update() in this function.
     s_aDown = M5.BtnA.isPressed();
     s_bDown = M5.BtnB.isPressed();
     s_pwrDown = M5.BtnPWR.isPressed();
+    if (s_aDown && M5.BtnA.pressedFor(kHoldMs)) s_aWalked = true;
+    if (s_bDown && M5.BtnB.pressedFor(kHoldMs)) s_bWalked = true;
     s_aEdge = M5.BtnA.wasPressed();
     s_bEdge = M5.BtnB.wasPressed();
     s_pwrEdge = M5.BtnPWR.wasPressed();
-    s_aClick = M5.BtnA.wasClicked();
-    s_bClick = M5.BtnB.wasClicked();
+    s_aClick = M5.BtnA.wasClicked() && !s_aWalked;
+    s_bClick = M5.BtnB.wasClicked() && !s_bWalked;
     s_pwrClick = M5.BtnPWR.wasClicked();
     s_pwrHold = M5.BtnPWR.wasHold();
+    if (!s_aDown) s_aWalked = false;
+    if (!s_bDown) s_bWalked = false;
 }
 
 bool ok() { return s_pwrClick; }
