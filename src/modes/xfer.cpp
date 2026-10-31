@@ -1,4 +1,4 @@
-﻿// WiFi AP + DOS Commander web file manager
+// WiFi AP + DOS Commander web file manager
 #include "xfer.h"
 #include "../cap/sniffer.h"
 #include "../ui/display.h"
@@ -254,8 +254,8 @@ void update() {
     if (!s_run) return;
     if (s_srv) s_srv->handleClient();
 
-    if (!keyNewPress(s_keyLatch)) return;
-    if (keyEsc()) {
+    if (!ButtonMapper::keyNewPress(s_keyLatch)) return;
+    if (ButtonMapper::back()) {
         stop();
         return;
     }
@@ -297,7 +297,7 @@ void getStatusLine(char* out, size_t n) {
         return;
     }
     if ((millis() % 7500u) >= 5000u)
-        snprintf(out, n, "ESC EXIT  PHONE CONNECTS TO AP");
+        snprintf(out, n, "HOLD PWR EXIT  PHONE CONNECTS TO AP");
     else
         snprintf(out, n, "XFER %u STA  %s",
                  (unsigned)WiFi.softAPgetStationNum(), s_status);

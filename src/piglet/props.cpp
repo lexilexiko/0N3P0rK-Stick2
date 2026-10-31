@@ -1,4 +1,4 @@
-﻿// Seasonal daily props вЂ” hive, snowman, fox, campfire, city cat, desert skull.
+// Seasonal daily props вЂ” hive, snowman, fox, campfire, city cat, desert skull.
 #include "props.h"
 #include "weather.h"
 #include "avatar.h"

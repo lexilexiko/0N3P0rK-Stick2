@@ -1,4 +1,4 @@
-﻿// Live registry for capture methods. The actual table is filled by static
+// Live registry for capture methods. The actual table is filled by static
 // initialisers in each method_*.cpp via CAP_METHOD_REGISTER(); this file
 // just owns the storage and the public accessors.
 //

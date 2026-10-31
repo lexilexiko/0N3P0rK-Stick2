@@ -817,3 +817,10 @@ Not affiliated with M5Stack.
 **Thanks** to everyone who tested builds, to the Cardputer community, and to **Oct0sec** for handshake-path inspiration.
 
 **0N3P0rK** — oink responsibly.
+## StickC Plus 2 button handling
+
+Physical button sampling and translation are centralized in `src/ui/button_mapper.cpp` / `button_mapper.h`. This is the only place that reads `M5.BtnA`, `M5.BtnB`, or `M5.BtnPWR`, and it owns short clicks, long holds, press edges, and the A+B chord event. Runtime modules use the `ButtonMapper` API. `src/ui/keys.h` remains as a compatibility facade for older modules and external code.
+
+Mode-specific actions (for example, what PWR does inside File Manager versus LOOT) intentionally remain in their respective mode handlers. Those handlers consume centralized logical events; they do not read hardware buttons directly. This keeps action logic close to the feature while making physical-button behavior and aliases editable in one central place.
+
+Current physical aliases: A = `.`, B = `;`, short PWR = `m` / Enter, long PWR = Escape / `q`, and A+B produces a one-shot `comboAB()` event when the chord begins.

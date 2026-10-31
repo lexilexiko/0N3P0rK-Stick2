@@ -1,4 +1,4 @@
-﻿// Live registry for radio packs. The actual table is filled by static
+// Live registry for radio packs. The actual table is filled by static
 // initialisers in each pack_*.cpp via CAP_PACK_REGISTER(); this file just
 // owns the storage and the public accessors. Mirrors
 // src/cap/methods/method_registry.cpp exactly.

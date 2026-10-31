@@ -1,4 +1,4 @@
-﻿#include "screenshot.h"
+#include "screenshot.h"
 #include "display.h"
 #include "../core/config.h"
 #include "../core/sd_layout.h"
@@ -143,8 +143,8 @@ void poll() {
     }
     char up = k;
     if (up >= 'a' && up <= 'z') up = (char)(up - 'a' + 'A');
-    bool down = Keys::isKeyPressed(k) ||
-                (up != k && Keys::isKeyPressed(up));
+    bool down = ButtonMapper::isKeyPressed(k) ||
+                (up != k && ButtonMapper::isKeyPressed(up));
     if (down && !s_keyWas && !s_busy) take();
     s_keyWas = down;
 }

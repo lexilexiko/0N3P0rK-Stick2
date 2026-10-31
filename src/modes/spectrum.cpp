@@ -1,4 +1,4 @@
-﻿// Rewritten 2.4 GHz spectrum for 0N3P0rK.
+// Rewritten 2.4 GHz spectrum for 0N3P0rK.
 // Look: OnePork lobes / grass / waterfall. Guts: our radio, no NetworkRecon.
 #include "spectrum.h"
 #include "../ui/display.h"
@@ -594,10 +594,10 @@ static void viewTick() {
         s_viewT0 = 0;
         return;
     }
-    bool left = Keys::isKeyPressed(',');
-    bool right = Keys::isKeyPressed('/');
-    left = left || Keys::isKeyPressed('<');
-    right = right || Keys::isKeyPressed('>');
+    bool left = ButtonMapper::isKeyPressed(',');
+    bool right = ButtonMapper::isKeyPressed('/');
+    left = left || ButtonMapper::isKeyPressed('<');
+    right = right || ButtonMapper::isKeyPressed('>');
     if (!left && !right) {
         s_viewT0 = 0;
         return;
@@ -1246,7 +1246,7 @@ void getStatusLine(char* out, size_t n) {
     bool keys = (millis() % 7500u) >= 5000u;
     if (s_phase == HUNT) {
         if (keys) {
-            snprintf(out, n, "D DEPTH  ESC STOP");
+            snprintf(out, n, "HOLD PWR STOP  A/B SELECT CLIENT");
         } else {
             const Hc22000::HandshakeProgress progress =
                 Hc22000::handshakeProgress(s_monBssid, s_huntDepth);
@@ -1259,19 +1259,19 @@ void getStatusLine(char* out, size_t n) {
         }
     } else if (s_phase == LOCK) {
         if (keys) {
-            snprintf(out, n, "ENT HUNT  D %s  SPC  ESC", huntDepthName(s_huntDepth));
+            snprintf(out, n, "PWR HUNT  HOLD PWR BACK");
         } else {
             int idx = findNet(s_monBssid);
             snprintf(out, n, "LOCK CH%u  %u STA",
                      s_monCh, idx >= 0 ? s_net[idx].nCli : 0);
         }
     } else {
-        snprintf(out, n, "^/v AP  </> MOVE  -/= ZOOM  ENT LOCK  A HUNT");
+        snprintf(out, n, "A/B SELECT AP  PWR LOCK  HOLD PWR EXIT");
     }
 }
 
 static void handleSweep() {
-    if (Keys::isKeyPressed(';')) {
+    if (ButtonMapper::isKeyPressed(';')) {
         int n = nextSel(-1);
         if (n >= 0) {
             setSel(n);
@@ -1279,7 +1279,7 @@ static void handleSweep() {
             SFX::play(SFX::MENU_CLICK);
         }
     }
-    if (Keys::isKeyPressed('.')) {
+    if (ButtonMapper::isKeyPressed('.')) {
         int n = nextSel(+1);
         if (n >= 0) {
             setSel(n);
@@ -1287,20 +1287,20 @@ static void handleSweep() {
             SFX::play(SFX::MENU_CLICK);
         }
     }
-    if (Keys::isKeyPressed('-')) zoomView(-1);
-    if (Keys::isKeyPressed('=')) zoomView(+1);
-    if (Keys::isKeyPressed('0')) resetView();
-    if (Keys::isKeyPressed('f') || Keys::isKeyPressed('F')) {
+    if (ButtonMapper::isKeyPressed('-')) zoomView(-1);
+    if (ButtonMapper::isKeyPressed('=')) zoomView(+1);
+    if (ButtonMapper::isKeyPressed('0')) resetView();
+    if (ButtonMapper::isKeyPressed('f') || ButtonMapper::isKeyPressed('F')) {
         s_filt = (Filt)((s_filt + 1) & 3);
         if (s_sel < 0 || s_sel >= s_nNet || !passFilt(s_net[s_sel]))
             setSel(nextSel(+1));
         SFX::play(SFX::MENU_CLICK);
     }
-    if (Keys::isKeyPressed('a') || Keys::isKeyPressed('A')) {
+    if (ButtonMapper::isKeyPressed('a') || ButtonMapper::isKeyPressed('A')) {
         enterHunt();
         return;
     }
-    if (Keys::keysState().enter) enterLock();
+    if (ButtonMapper::keysState().enter) enterLock();
 }
 
 static void handleLock() {
@@ -1310,15 +1310,15 @@ static void handleLock() {
     }
     int idx = findNet(s_monBssid);
     uint8_t nc = (idx >= 0) ? s_net[idx].nCli : 0;
-    if (Keys::isKeyPressed(';') && nc) {
+    if (ButtonMapper::isKeyPressed(';') && nc) {
         if (s_cliSel > 0) s_cliSel--;
         SFX::play(SFX::MENU_CLICK);
     }
-    if (Keys::isKeyPressed('.') && nc) {
+    if (ButtonMapper::isKeyPressed('.') && nc) {
         if (s_cliSel + 1 < nc) s_cliSel++;
         SFX::play(SFX::MENU_CLICK);
     }
-    if (Keys::isKeyPressed('w') || Keys::isKeyPressed('W')) {
+    if (ButtonMapper::isKeyPressed('w') || ButtonMapper::isKeyPressed('W')) {
         if (idx >= 0 && s_net[idx].pmf) {
             Display::showToast("PMF вЂ” DEAF");
             return;
@@ -1329,27 +1329,27 @@ static void handleLock() {
         SFX::play(SFX::REVEAL_START);
         return;
     }
-    if (Keys::keysState().enter ||
-        Keys::isKeyPressed('a') ||
-        Keys::isKeyPressed('A')) {
+    if (ButtonMapper::keysState().enter ||
+        ButtonMapper::isKeyPressed('a') ||
+        ButtonMapper::isKeyPressed('A')) {
         enterHunt();
         return;
     }
-    if (Keys::isKeyPressed('d') ||
-        Keys::isKeyPressed('D')) {
+    if (ButtonMapper::isKeyPressed('d') ||
+        ButtonMapper::isKeyPressed('D')) {
         cycleHuntDepth();
         return;
     }
-    if (Keys::isKeyPressed(' ')) kick(nc ? s_cliSel : -1);
+    if (ButtonMapper::isKeyPressed(' ')) kick(nc ? s_cliSel : -1);
 }
 
 static void handleHunt() {
-    if (Keys::isKeyPressed('d') ||
-        Keys::isKeyPressed('D')) {
+    if (ButtonMapper::isKeyPressed('d') ||
+        ButtonMapper::isKeyPressed('D')) {
         cycleHuntDepth();
         return;
     }
-    if (Keys::isKeyPressed(' ')) {
+    if (ButtonMapper::isKeyPressed(' ')) {
         // Cap::loop() already kicks s_monBssid вЂ” don't double-fire.
         Display::showToast("ALREADY KICKING");
     }
@@ -1379,8 +1379,8 @@ void update() {
         SFX::play(SFX::CLIENT_FOUND);
     }
     if (App::windowHidden()) return;
-    if (!keyNewPress(s_keyWas)) return;
-    if (keyEsc()) {
+    if (!ButtonMapper::keyNewPress(s_keyWas)) return;
+    if (ButtonMapper::back()) {
         if (s_phase == HUNT) {
             exitHunt();
             return;

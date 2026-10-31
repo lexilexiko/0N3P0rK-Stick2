@@ -1,4 +1,4 @@
-﻿// Sky layer вЂ” gradient, moon, stars (clouds/rain remain in weather.cpp).
+// Sky layer вЂ” gradient, moon, stars (clouds/rain remain in weather.cpp).
 #include "sky.h"
 #include "weather.h"
 #include "avatar.h"

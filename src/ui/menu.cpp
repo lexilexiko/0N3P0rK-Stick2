@@ -1,4 +1,4 @@
-﻿#include "menu.h"
+#include "menu.h"
 #include "display.h"
 #include "../core/config.h"
 #include "../core/app.h"
@@ -54,7 +54,7 @@ static const char* const H_ATTACK[] = {
 };
 static const char* const H_LOOT[] = {
     "WPASEC + PWN + OHC. ONE BAG.",
-    "</> SWITCH TAB. S SYNC."
+    "A/B HOLD SWITCH TAB. PWR SEND."
 };
 static const char* const H_PIG[] = {
     "HER FACE. HER WORLD.",
@@ -66,7 +66,7 @@ static const char* const H_SET[] = {
 };
 static const char* const H_TASKS[] = {
     "STOP UNUSED RADIO AND SERVICES.",
-    "HEAP + LARGEST BLOCK. ENT STOP."
+    "A/B SELECT TASK. PWR STOP."
 };
 static const char* const H_SYS[] = {
     "BRIGHT SOUND DIM.",
@@ -74,7 +74,7 @@ static const char* const H_SYS[] = {
 };
 static const char* const H_STAT[] = {
     "BOARD BATT SD WIFI KEYS.",
-    "READ ONLY. ESC BACK."
+    "A/B SCROLL. HOLD PWR BACK."
 };
 static const char* const H_RADIO[] = {
     "HOP LOCK DEAUTH RSSI MAC.",
@@ -106,15 +106,19 @@ static const char* const H_USB[] = {
 };
 static const char* const H_FILEMGR[] = {
     "SD + INTERNAL MEM. TXT VIEW/EDIT.",
-    "V VOL  ENT OPEN  N NEW  X DEL."
+    "A/B SELECT. PWR OPEN. HOLD BACK."
 };
 static const char* const H_KEYS[] = {
-    "BIND FARM / MENU SHORTCUTS.",
-    "RADIO R. ENT SET. BS CLEAR."
+    "PHYSICAL BUTTON MAP PREVIEW.",
+    "SELECT A MODE TO VIEW CONTROLS."
+};
+static const char* const H_SHOT[] = {
+    "SAVE A SCREENSHOT TO SD.",
+    "CAPTURE THE CURRENT DISPLAY."
 };
 static const char* const H_SPEC[] = {
     "2.4 SWEEP. LOBES AND FALL.",
-    "ENT LOCK. SPC KICK. W WAKE."
+    "A/B SELECT AP. PWR LOCK."
 };
 
 static const char* const H_LIGHT[] = {
@@ -131,7 +135,7 @@ static const char* const H_STOP[] = {
 };
 static const char* const H_EVIL[] = {
     "LAB PORTAL. OWN NETS ONLY.",
-    "ENT CLONE. V LOOT. D KICK."
+    "A/B SELECT. PWR OPEN. HOLD BACK."
 };
 static const char* const H_PASS[] = {
     "OFFLINE WPA LAB. WORDLIST/MASK.",
@@ -139,7 +143,7 @@ static const char* const H_PASS[] = {
 };
 static const char* const H_HASHES[] = {
     "FEED YO HASHCAT.",
-    "S SYNC  T TEST  ENT DETAIL."
+    "PWR SEND. PWR+A SEND ALL. PWR+B RESULTS."
 };
 static const char* const H_PWN[] = {
     "PWNCRACK.ORG вЂ” NOT WPA-SEC.",
@@ -151,7 +155,7 @@ static const char* const H_LIFE[] = {
 };
 static const char* const H_TWEAK[] = {
     "SKIN SEASON SKY SOUND.",
-    "</> CYCLE  ENT NAME."
+    "A/B MOVE. PWR SELECT."
 };
 
 static const RootItem ROOT[] = {
@@ -177,8 +181,9 @@ static const Item G_SET[] = {
     {"::", "STATUS",  19, H_STAT,   2},
     {"))", "RADIO",   11, H_RADIO,  2},
     {"BT", "BLE",     12, H_BLESET, 2},
-    {"**", "KEYS",    18, H_KEYS,   2},
-    {"[:", "FILES",   20, H_FILEMGR,2}
+    {"**", "BUTTONS", 18, H_KEYS,   2},
+    {"[:", "FILES",   20, H_FILEMGR,2},
+    {"[S", "SCREENSHOT", 25, H_SHOT, 2}
 };
 static const Item G_CONNECT[] = {
     {"))", "WIFI",    6,  H_CONN,   2},
@@ -212,9 +217,9 @@ static const Item* groupItems(GroupId g) {
 }
 
 static uint8_t groupSize(GroupId g) {
-    if (g == GroupId::ATTACK) return 8;
-    if (g == GroupId::SET) return 6;
-    if (g == GroupId::CONNECT) return 4;
+    if (g == GroupId::ATTACK) return 6;
+    if (g == GroupId::SET) return 7;
+    if (g == GroupId::CONNECT) return 3;
     return 0;
 }
 
@@ -280,6 +285,10 @@ static void doAction(uint8_t id) {
             App::setMode(AppMode::TUNE);
             break;
         case 18:
+            SettingsMenu::show(SettingsPage::BUTTONS);
+            App::setMode(AppMode::TUNE);
+            break;
+        case 24:
             SettingsMenu::show(SettingsPage::KEYS);
             App::setMode(AppMode::TUNE);
             break;
@@ -310,7 +319,7 @@ static void doAction(uint8_t id) {
             if (Cap::isRunning()) Cap::stop();
             App::setMode(AppMode::PIGPASS);
             break;
-        case 24:
+        case 25:
             Screenshot::take();
             break;
         case 8: {
@@ -368,16 +377,16 @@ void onEnter(AppMode mode) {
 }
 
 const char* hint() {
-    if (s_editing) return "TYPE  ENT SAVE  ESC CANCEL";
+    if (s_editing) return "TEXT INPUT  PWR SAVE  HOLD PWR CANCEL";
     if (App::mode() == AppMode::MENU) {
         return s_group == GroupId::NONE
-            ? "A/B MOVE  PWR OPEN  HOLD BACK"
-            : "A/B MOVE  PWR OK  HOLD BACK";
+            ? "A DOWN  B UP  PWR OPEN  HOLD PWR BACK"
+            : "A DOWN  B UP  PWR SELECT  HOLD BACK";
     }
     if (App::mode() == AppMode::PIG || App::mode() == AppMode::TUNE ||
         App::mode() == AppMode::WIFI)
         return SettingsMenu::bottomHint();
-    return "^/v  ENT  ESC BACK";
+    return "A/B MOVE  PWR SELECT  HOLD PWR BACK";
 }
 
 const char* selectedHint() {
@@ -426,8 +435,8 @@ bool tryHotkey() {
         if (!k) continue;
         char up = k;
         if (up >= 'a' && up <= 'z') up = (char)(up - 'a' + 'A');
-        if (Keys::isKeyPressed(k) ||
-            (up != k && Keys::isKeyPressed(up))) {
+        if (ButtonMapper::isKeyPressed(k) ||
+            (up != k && ButtonMapper::isKeyPressed(up))) {
             doAction(ACT[i]);
             return true;
         }
@@ -437,9 +446,9 @@ bool tryHotkey() {
 
 void update() {
     if (!s_active || App::mode() != AppMode::MENU) return;
-    if (!keyNewPress(s_keyWas)) return;
+    if (!ButtonMapper::keyNewPress(s_keyWas)) return;
 
-    if (Keys::back()) {
+    if (ButtonMapper::back()) {
         if (s_group != GroupId::NONE) closeModal();
         else App::setMode(AppMode::FARM);
         return;
@@ -459,9 +468,9 @@ void update() {
 
     if (s_group != GroupId::NONE) {
         uint8_t n = groupSize(s_group);
-        if (Keys::prev()) moveSel(-1, s_modalIdx, s_modalScroll, n, MODAL_VIS);
-        else if (Keys::next()) moveSel(1, s_modalIdx, s_modalScroll, n, MODAL_VIS);
-        else if (Keys::ok()) {
+        if (ButtonMapper::prev()) moveSel(-1, s_modalIdx, s_modalScroll, n, MODAL_VIS);
+        else if (ButtonMapper::next()) moveSel(1, s_modalIdx, s_modalScroll, n, MODAL_VIS);
+        else if (ButtonMapper::ok()) {
             SFX::play(SFX::MENU_CLICK);
             const Item* it = groupItems(s_group);
             uint8_t id = (it && s_modalIdx < n) ? it[s_modalIdx].actionId : 0;
@@ -471,9 +480,9 @@ void update() {
         return;
     }
 
-    if (Keys::prev()) moveSel(-1, s_rootIdx, s_rootScroll, ROOT_COUNT, VISIBLE);
-    else if (Keys::next()) moveSel(1, s_rootIdx, s_rootScroll, ROOT_COUNT, VISIBLE);
-    else if (Keys::ok()) {
+    if (ButtonMapper::prev()) moveSel(-1, s_rootIdx, s_rootScroll, ROOT_COUNT, VISIBLE);
+    else if (ButtonMapper::next()) moveSel(1, s_rootIdx, s_rootScroll, ROOT_COUNT, VISIBLE);
+    else if (ButtonMapper::ok()) {
         SFX::play(SFX::MENU_CLICK);
         const RootItem& it = ROOT[s_rootIdx];
         if (it.type == RootType::GROUP) {

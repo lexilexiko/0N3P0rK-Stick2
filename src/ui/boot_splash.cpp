@@ -1,5 +1,6 @@
-﻿#include "boot_splash.h"
+#include "boot_splash.h"
 #include "display.h"
+#include "button_mapper.h"
 #include "../piglet/avatar.h"
 #include "../audio/sfx.h"
 #include "../build_info.h"
@@ -9,8 +10,9 @@
 
 static bool wantSkip() {
     M5.update();
-    if (M5.BtnA.isPressed()) return true;
-    if (M5.BtnB.isPressed()) return true;
+    ButtonMapper::update();
+    if (ButtonMapper::btnA()) return true;
+    if (ButtonMapper::btnB()) return true;
     return false;
 }
 

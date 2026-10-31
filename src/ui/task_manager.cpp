@@ -1,4 +1,4 @@
-﻿#include "task_manager.h"
+#include "task_manager.h"
 #include "loot_menu.h"
 #include "display.h"
 #include "keys.h"
@@ -200,27 +200,27 @@ bool isRunning() {
 }
 
 void update() {
-    if (!s_running || !keyNewPress(s_keyWas)) return;
-    if (keyEsc()) {
+    if (!s_running || !ButtonMapper::keyNewPress(s_keyWas)) return;
+    if (ButtonMapper::back()) {
         stop();
         return;
     }
-    if (keyMin()) {
+    if (false) {
         stop();
         return;
     }
-    if (Keys::isKeyPressed(';')) {
+    if (ButtonMapper::isKeyPressed(';')) {
         if (s_selected > 0) --s_selected;
         if (s_selected < s_scroll) s_scroll = s_selected;
         return;
     }
-    if (Keys::isKeyPressed('.')) {
+    if (ButtonMapper::isKeyPressed('.')) {
         if (s_selected + 1 < ROW_COUNT) ++s_selected;
         if (s_selected >= s_scroll + VISIBLE_ROWS)
             s_scroll = (uint8_t)(s_selected - VISIBLE_ROWS + 1);
         return;
     }
-    if (Keys::keysState().enter) {
+    if (ButtonMapper::keysState().enter) {
         Row selected = (Row)s_selected;
         stopRow(selected);
         if (selected == STOP_ALL && networkSyncActive())
@@ -302,6 +302,10 @@ void draw(M5Canvas& canvas) {
         canvas.setTextColor(UiStyle::GOLD);
         canvas.drawString("v", DISPLAY_W - 7, 88);
     }
+    canvas.setTextColor(UiStyle::CYAN);
+    canvas.setTextDatum(bottom_left);
+    canvas.drawString("A/B MOVE   PWR STOP   HOLD BACK", 7, DISPLAY_H - 10);
+    canvas.setTextDatum(top_left);
 }
 
 }  // namespace TaskManager

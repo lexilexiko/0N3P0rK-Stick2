@@ -1,4 +1,4 @@
-﻿// В«Р”СѓСЌР»СЊВ» вЂ” full card game at the farm table (lv 45+).
+// В«Р”СѓСЌР»СЊВ» вЂ” full card game at the farm table (lv 45+).
 #include "cards_table.h"
 #include "avatar.h"
 #include "mood.h"
@@ -25,9 +25,8 @@ static uint32_t s_cool  = 0;
 static bool s_ready     = false;
 static bool s_active    = false;
 static bool s_nearTable = false;
-static bool s_escLatch  = false;
 static bool s_entLatch  = false;
-static bool s_keyLatch[5] = {};
+static uint8_t s_cursor = 0;
 
 enum class CType : uint8_t { ATK = 0, DEF = 1, HEAL = 2 };
 
@@ -415,14 +414,14 @@ void begin() {
     s_cool = 0;
     s_ready = true;
     s_active = false;
-    s_escLatch = s_entLatch = false;
-    memset(s_keyLatch, 0, sizeof(s_keyLatch));
+    s_entLatch = false;
+    s_cursor = 0;
 }
 
 void end() {
     if (!s_active) return;
     s_active = false;
-    s_escLatch = s_entLatch = false;
+    s_entLatch = false;
     Avatar::resumeScene();
     Display::showToast("CARDS OUT", 900);
     SFX::play(SFX::MENU_CLICK);
@@ -436,8 +435,8 @@ void scroll(int8_t dx) {
 static void startDuel() {
     if (s_active) return;
     s_active = true;
-    s_escLatch = s_entLatch = false;
-    memset(s_keyLatch, 0, sizeof(s_keyLatch));
+    s_entLatch = false;
+    s_cursor = 0;
     Avatar::suspendScene();
     startMatch();
     Display::showToast("DUEL", 1000);
@@ -445,14 +444,6 @@ static void startDuel() {
     Avatar::setState(AvatarState::HAPPY);
 }
 
-static bool keyEnter() {
-    // Cardputer Enter / Return / Space (confirm)
-    if (Keys::isKeyPressed('\n')) return true;
-    if (Keys::isKeyPressed('\r')) return true;
-    if (Keys::isKeyPressed(' ')) return true;
-    if (Keys::isKeyPressed(0x28)) return true; // HID Enter
-    return false;
-}
 
 void update() {
     if (!unlocked()) {
@@ -462,7 +453,7 @@ void update() {
     if (!s_ready) begin();
 
     if (s_active) {
-        if (keyNewPress(s_escLatch) && keyEsc()) {
+        if (ButtonMapper::back()) {
             end();
             return;
         }
@@ -513,12 +504,12 @@ void update() {
 
         if (s_phase == Phase::RESOLVE || s_phase == Phase::ROUND_OVER ||
             s_phase == Phase::MATCH_OVER) {
-            // Timer OR Enter вЂ” never both in one frame (would skip a phase)
+            // Timer OR PWR click — never both in one frame (would skip a phase)
             if (now >= s_phaseUntil) {
                 advanceAfterPause();
             } else if ((s_phase != Phase::RESOLVE ||
                         now - s_resolveStart >= 3650u) &&
-                       keyNewPress(s_entLatch) && keyEnter()) {
+                       ButtonMapper::keyNewPress(s_entLatch) && ButtonMapper::ok()) {
                 s_phaseUntil = 0;
                 advanceAfterPause();
             }
@@ -526,29 +517,35 @@ void update() {
         }
 
         if (s_phase == Phase::SELECT) {
-            for (int k = 0; k < 5; k++) {
-                char ch = (char)('1' + k);
-                if (!keyNewPress(s_keyLatch[k])) continue;
-                if (!Keys::isKeyPressed(ch)) continue;
-                if (s_sel[k]) {
-                    s_sel[k] = false;
+            // StickC Plus 2 controls: A = next card, B = previous card,
+            // PWR click = select/deselect; another PWR click plays the pair.
+            if (ButtonMapper::next()) {
+                s_cursor = (uint8_t)((s_cursor + 1u) % HAND_N);
+                SFX::play(SFX::MENU_CLICK);
+            } else if (ButtonMapper::prev()) {
+                s_cursor = (uint8_t)((s_cursor + HAND_N - 1u) % HAND_N);
+                SFX::play(SFX::MENU_CLICK);
+            }
+
+            if (ButtonMapper::ok()) {
+                if (s_sel[s_cursor]) {
+                    s_sel[s_cursor] = false;
                     if (s_selCount) s_selCount--;
                     SFX::play(SFX::MENU_CLICK);
                 } else if (s_selCount < PICK_N) {
-                    s_sel[k] = true;
+                    s_sel[s_cursor] = true;
                     s_selCount++;
                     SFX::play(SFX::MENU_CLICK);
+                } else {
+                    resolveTurn();
                 }
-            }
-            if (s_selCount == PICK_N && keyNewPress(s_entLatch) && keyEnter()) {
-                resolveTurn();
             }
         }
         return;
     }
 
     // Jump never starts the duel (tree smash conflict).
-    // Stand near table center + press G.
+    // Stand near table center + press PWR.
     if (Avatar::isJumping()) return;
 
     int16_t sx = screenX();
@@ -556,21 +553,17 @@ void update() {
     bool atTable = abs(pig - (int)sx) < 28;
     s_nearTable = atTable;
 
-    static bool s_gWas = false;
     static uint32_t s_hintMs = 0;
-    bool gNow = Keys::isKeyPressed('g') ||
-                Keys::isKeyPressed('G');
-    bool gEdge = gNow && !s_gWas;
-    s_gWas = gNow;
+    bool playPressed = ButtonMapper::ok();
 
     if (!atTable) return;
 
     uint32_t now = millis();
     if (now - s_hintMs > 2800) {
         s_hintMs = now;
-        Mood::say("G = PLAY");
+        Mood::say("PWR = PLAY");
     }
-    if (gEdge && now > s_cool) {
+    if (playPressed && now > s_cool) {
         s_cool = now + 800;
         startDuel();
     }
@@ -1369,6 +1362,9 @@ void drawActive(M5Canvas& canvas) {
             int16_t x = (int16_t)(x0 + i * (CW + gap));
             const int16_t cardY = s_sel[i] ? 32 : 35;
             drawCardFaceSized(canvas, x, cardY, CW, CH, s_hand[i], s_sel[i]);
+            if (i == s_cursor) {
+                canvas.drawRect(x - 2, cardY - 2, CW + 4, CH + 4, 0xFFE0);
+            }
         }
         drawCombatStats(canvas);
         return;
@@ -1466,13 +1462,13 @@ void getStatusLine(char* buf, size_t n) {
     if (!s_active) { buf[0] = '\0'; return; }
     if (s_phase == Phase::SELECT) {
         if (s_selCount == PICK_N)
-            snprintf(buf, n, "1-5 CARD  ENT PLAY  ESC EXIT");
+            snprintf(buf, n, "A/B MOVE  PWR UNDO/PLAY  HOLD PWR EXIT");
         else
-            snprintf(buf, n, "1-5 PICK 2 CARDS  ESC EXIT");
+            snprintf(buf, n, "A/B MOVE  PWR PICK  HOLD PWR EXIT");
     } else if (s_phase == Phase::MATCH_OVER) {
-        snprintf(buf, n, "ENT CONFIRM  ESC EXIT");
+        snprintf(buf, n, "PWR NEXT  HOLD PWR EXIT");
     } else {
-        snprintf(buf, n, "ENT NEXT  ESC EXIT");
+        snprintf(buf, n, "PWR NEXT  HOLD PWR EXIT");
     }
 }
 

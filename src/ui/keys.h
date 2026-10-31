@@ -1,50 +1,36 @@
 #pragma once
-#include <M5Unified.h>
+#include "button_mapper.h"
 
-// StickC Plus 2 has three buttons. One scheme everywhere:
-//   A (GPIO 37)  next / down / walk right. Short tap on the farm = jump.
-//   B (GPIO 39)  previous / up / walk left. Short tap on the farm = sit.
-//   PWR (GPIO 35) short = OK / open the menu. Hold = back.
-// The old keyboard letters (; . enter ESC) are aliases of these three.
-
+// Compatibility facade. New code should use ButtonMapper directly.
 namespace Keys {
-
-void begin();
-void update();
-
-bool ok();        // PWR short click
-bool back();      // PWR hold
-bool next();      // A press edge
-bool prev();      // B press edge
-bool tapA();      // A short click
-bool tapB();      // B short click
-bool holdA();     // A held long enough to walk
-bool holdB();     // B held long enough to walk
-
-bool keyNewPress(bool& latch);
-
-bool btnA();
-bool btnB();
-bool btnPWR();
-
-bool isKeyPressed(char c);
-
-struct KeysState {
-    char word[8] = {0};
-    bool enter = false;
-    bool del = false;
-    bool fn  = false;
-};
-
-char typedChar();
-KeysState keysState();
-bool isPressedAny();
-bool isPressed();
-bool isChanged();
-
-}  // namespace Keys
-
-inline bool keyEsc()  { return Keys::back(); }
-inline bool keyEnter(){ return Keys::ok(); }
-inline bool keyMin()  { return false; }
-inline bool keyNewPress(bool& latch) { return Keys::keyNewPress(latch); }
+using KeysState = ButtonMapper::KeysState;
+inline void begin(){ ButtonMapper::begin(); }
+inline void update(){ ButtonMapper::update(); }
+inline bool ok(){ return ButtonMapper::ok(); }
+inline bool back(){ return ButtonMapper::back(); }
+inline bool next(){ return ButtonMapper::next(); }
+inline bool prev(){ return ButtonMapper::prev(); }
+inline bool tapA(){ return ButtonMapper::tapA(); }
+inline bool tapB(){ return ButtonMapper::tapB(); }
+inline bool holdA(){ return ButtonMapper::holdA(); }
+inline bool holdB(){ return ButtonMapper::holdB(); }
+inline bool longA(){ return ButtonMapper::longA(); }
+inline bool longB(){ return ButtonMapper::longB(); }
+inline bool longPower(){ return ButtonMapper::longPower(); }
+inline bool comboAB(){ return ButtonMapper::comboAB(); }
+inline bool bothAB(){ return ButtonMapper::bothAB(); }
+inline bool keyNewPress(bool& l){ return ButtonMapper::keyNewPress(l); }
+inline bool btnA(){ return ButtonMapper::btnA(); }
+inline bool btnB(){ return ButtonMapper::btnB(); }
+inline bool btnPWR(){ return ButtonMapper::btnPWR(); }
+inline bool isKeyPressed(char c){ return ButtonMapper::isKeyPressed(c); }
+inline char typedChar(){ return ButtonMapper::typedChar(); }
+inline KeysState keysState(){ return ButtonMapper::keysState(); }
+inline bool isPressedAny(){ return ButtonMapper::isPressedAny(); }
+inline bool isPressed(){ return ButtonMapper::isPressed(); }
+inline bool isChanged(){ return ButtonMapper::isChanged(); }
+}
+inline bool keyEsc(){ return ButtonMapper::back(); }
+inline bool keyEnter(){ return ButtonMapper::ok(); }
+inline bool keyMin(){ return false; }
+inline bool keyNewPress(bool& latch){ return ButtonMapper::keyNewPress(latch); }

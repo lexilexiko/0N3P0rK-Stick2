@@ -1,4 +1,4 @@
-﻿#include "display.h"
+#include "display.h"
 #include "menu.h"
 #include "keys.h"
 #include "../core/app.h"
@@ -385,7 +385,7 @@ bool Display::showConfirmBox(const char* title, const char* message) {
     setBottomHint("A YES  B NO");
     for (;;) {
         M5.update();
-        Keys::update();
+        ButtonMapper::update();
         c.fillSprite(UiStyle::BG);
         c.fillRoundRect(12, 18, 216, 72, 6, 0x18C3);
         c.drawRoundRect(12, 18, 216, 72, 6, UiStyle::GOLD);
@@ -400,11 +400,11 @@ bool Display::showConfirmBox(const char* title, const char* message) {
         drawBottomBar();
         pushAll();
 
-        if (Keys::ok() || Keys::tapA() || Keys::next()) {
+        if (ButtonMapper::ok() || ButtonMapper::tapA() || ButtonMapper::next()) {
             memcpy(bottomHint, savedHint, sizeof(bottomHint));
             return true;
         }
-        if (Keys::tapB() || Keys::prev() || Keys::back()) {
+        if (ButtonMapper::tapB() || ButtonMapper::prev() || ButtonMapper::back()) {
             memcpy(bottomHint, savedHint, sizeof(bottomHint));
             return false;
         }
@@ -740,7 +740,7 @@ void Display::drawBottomBar() {
         bottomBar.setTextColor(TEXT_COL);
         bottomBar.setTextSize(1);
         bottomBar.setTextDatum(top_left);
-        bottomBar.drawString("^/v MOVE  ENT TOGGLE  Q BACK", 3, 2);
+        bottomBar.drawString("A/B MOVE  PWR TOGGLE  HOLD BACK", 3, 2);
         return;
     }
     auto blend565 = [](uint16_t fg, uint16_t bg, uint8_t weight) -> uint16_t {
@@ -947,7 +947,12 @@ void Display::drawBottomBar() {
                 strncpy(left, LootMenu::getBottomHint(), sizeof(left) - 1);
                 break;
             case AppMode::ATTACK:
-                strncpy(left, "LIGHT  AGGRO  STOP", sizeof(left) - 1);
+                if (Cap::isRunning() &&
+                    (Cap::runMode() == Cap::RunMode::Light ||
+                     Cap::runMode() == Cap::RunMode::Aggressive))
+                    strncpy(left, "HOLD PWR Q  HOLD A+B STOP", sizeof(left) - 1);
+                else
+                    strncpy(left, "LIGHT  AGGRO  STOP", sizeof(left) - 1);
                 break;
             case AppMode::WIFI:
             case AppMode::PIG:
@@ -980,7 +985,7 @@ void Display::drawBottomBar() {
                 XferMode::getStatusLine(left, sizeof(left));
                 break;
             case AppMode::TASKS:
-                strncpy(left, "^/v SELECT  ENT STOP  ESC BACK", sizeof(left) - 1);
+                strncpy(left, "A/B SELECT  PWR STOP  HOLD BACK", sizeof(left) - 1);
                 break;
             case AppMode::PIGPASS:
                 PigpassMode::getStatusLine(left, sizeof(left));
@@ -1017,7 +1022,7 @@ void Display::drawBottomBar() {
                 strncpy(left, SettingsMenu::bottomHint(), sizeof(left) - 1);
                 break;
             case AppMode::TASKS:
-                strncpy(left, "^/v SELECT  ENT STOP  ESC BACK", sizeof(left) - 1);
+                strncpy(left, "A/B SELECT  PWR STOP  HOLD BACK", sizeof(left) - 1);
                 break;
             default:
                 break;

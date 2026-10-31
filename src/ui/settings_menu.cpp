@@ -1,4 +1,4 @@
-﻿#include "settings_menu.h"
+#include "settings_menu.h"
 #include "display.h"
 #include "keys.h"
 #include "../core/config.h"
@@ -17,6 +17,7 @@
 #include "../cap/methods/method_ctx.h"
 #include "../cap/packs/pack_ctx.h"
 #include "../board/board.h"
+#include "../board/status_led.h"
 
 #ifndef KEY_ENTER
 #define KEY_ENTER 13
@@ -103,8 +104,7 @@ static const Item SYSTEM[] = {
     {"SOUND",     Kind::VALUE, 1, 0, 5, 1},
     {"DIM AFTER", Kind::VALUE, 2, 0, 300, 10},
     {"DIM LEVEL", Kind::VALUE, 3, 0, 50, 5},
-    {"LED",       Kind::TOGGLE, 4, 0, 1, 1},
-    {"LED BRIGHT",Kind::VALUE, 5, 0, 100, 5},
+    {"LED",       Kind::TOGGLE,4, 0, 1, 1},
 };
 static const uint8_t SYSTEM_N = sizeof(SYSTEM) / sizeof(SYSTEM[0]);
 
@@ -225,6 +225,49 @@ static const Item KEYS[] = {
 };
 static const uint8_t KEYS_N = sizeof(KEYS) / sizeof(KEYS[0]);
 
+// Read-only preview of physical controls. No input capture, NVS writes or
+// changes to the existing mode handlers are performed on this page.
+struct ButtonPreviewAction { const char* action; const char* binding; };
+struct ButtonPreviewProfile { const char* name; const ButtonPreviewAction* actions; uint8_t count; };
+static const ButtonPreviewAction BP_MENU[] = {
+    {"MOVE", "A / B"}, {"SELECT", "PWR"}, {"BACK", "HOLD PWR"}
+};
+static const ButtonPreviewAction BP_ATTACK[] = {
+    {"NAVIGATE", "A / B"}, {"STOP", "HOLD A + B"},
+    {"QUICK MENU", "HOLD PWR*"}, {"BACK", "HOLD PWR*"}
+};
+static const ButtonPreviewAction BP_LOOT[] = {
+    {"MOVE", "A / B"}, {"SWITCH TAB", "HOLD A / B"},
+    {"SEND FILE", "PWR"}, {"SEND ALL", "PWR + A"},
+    {"GET RESULTS", "PWR + B"}, {"INSPECT", "A + B"}, {"BACK", "HOLD PWR"}
+};
+static const ButtonPreviewAction BP_FILES[] = {
+    {"SELECT", "A / B"}, {"OPEN / ACTION", "PWR*"},
+    {"BACK", "HOLD PWR*"}, {"TEXT ENTRY", "KEYBOARD"}
+};
+static const ButtonPreviewAction BP_EVIL[] = {
+    {"SELECT", "A / B"}, {"OPEN / ACTION", "PWR*"}, {"BACK", "HOLD PWR*"}
+};
+static const ButtonPreviewAction BP_SPEC[] = {
+    {"AP SELECT / LOCK", "KEYBOARD / VERIFY"}, {"BACK", "HOLD PWR*"}
+};
+static const ButtonPreviewAction BP_SETTINGS[] = {
+    {"MOVE", "A / B"}, {"SELECT / EDIT", "PWR"}, {"BACK", "HOLD PWR"}
+};
+static const ButtonPreviewProfile BUTTON_PREVIEW[] = {
+    {"MAIN MENU", BP_MENU, sizeof(BP_MENU) / sizeof(BP_MENU[0])},
+    {"ATTACK", BP_ATTACK, sizeof(BP_ATTACK) / sizeof(BP_ATTACK[0])},
+    {"LOOT", BP_LOOT, sizeof(BP_LOOT) / sizeof(BP_LOOT[0])},
+    {"FILE MANAGER", BP_FILES, sizeof(BP_FILES) / sizeof(BP_FILES[0])},
+    {"EVILPIG", BP_EVIL, sizeof(BP_EVIL) / sizeof(BP_EVIL[0])},
+    {"SPECTRUM", BP_SPEC, sizeof(BP_SPEC) / sizeof(BP_SPEC[0])},
+    {"SETTINGS", BP_SETTINGS, sizeof(BP_SETTINGS) / sizeof(BP_SETTINGS[0])}
+};
+static const uint8_t BUTTON_PREVIEW_N = sizeof(BUTTON_PREVIEW) / sizeof(BUTTON_PREVIEW[0]);
+static bool s_buttonsDetail = false;
+static uint8_t s_buttonsProfile = 0;
+static uint8_t s_buttonsActionScroll = 0;
+
 static const char* const H_SCENE[] = {
     "TYPE NAME. ENT SAVE.",
     "SKIN OF THE HOG.",
@@ -278,8 +321,7 @@ static const char* const H_SYSTEM[] = {
     "0 = MUTE.",
     "0 = NEVER DIM.",
     "0 = SCREEN OFF WHEN DIM.",
-    "CARDPUTER RGB ON/OFF.",
-    "RGB LED BRIGHTNESS."
+    "RED LED: CAPTURE FLASH / WOLF SOLID. OFF DISABLES IT.",
 };
 static const char* const H_RADIO[] = {
     "RADIO PRESET.",
@@ -375,6 +417,25 @@ static char s_pickSsid[33] = "";
 static bool s_pickOpen = false;
 static bool s_scanning = false;
 
+// Three-button on-screen text entry for StickC Plus 2.
+// A/B move through a character set, PWR appends, HOLD PWR accepts,
+// A+B changes character set, and PWR+A removes the last character.
+static uint8_t s_textCharIndex = 0;
+static uint8_t s_textSet = 0;
+static bool s_ignoreTextPwrClick = false;
+static const char* const TEXT_SETS[] = {
+    "abcdefghijklmnopqrstuvwxyz",
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+    "0123456789",
+    "!@#$%^&*()-_=+[]{};:,.?/\\\\|~`'\"<>"
+};
+static constexpr uint8_t TEXT_SET_COUNT = sizeof(TEXT_SETS) / sizeof(TEXT_SETS[0]);
+static char textChar() {
+    const char* set = TEXT_SETS[s_textSet % TEXT_SET_COUNT];
+    const size_t n = strlen(set);
+    return n ? set[s_textCharIndex % n] : 'a';
+}
+static void resetTextPicker() { s_textCharIndex = 0; s_textSet = 0; }
 static bool isSceneSettingsPage() {
     return s_page == SettingsPage::SCENE ||
            s_page == SettingsPage::SCENE_TREES ||
@@ -549,8 +610,7 @@ static int getValue(const Item& it) {
             case 1: return p.soundLevel;
             case 2: return p.dimTimeout;
             case 3: return p.dimLevel;
-            case 4: return p.ledEnabled ? 1 : 0;
-            case 5: return p.ledBright;
+            case 4: return StatusLed::isEnabled() ? 1 : 0;
             default: return 0;
         }
     }
@@ -600,12 +660,13 @@ static int getValue(const Item& it) {
 static void formatValue(const Item& it, char* out, size_t len, bool editing) {
     if (it.kind == Kind::TEXT) {
         if (it.id == 16) {
-            if (s_text) snprintf(out, len, ">%s", s_edit);
+            if (s_text) snprintf(out, len, ">%s [%c]", s_edit, textChar());
             else snprintf(out, len, XP::allUnlocked() ? "OPEN" : "----");
             return;
         }
         const char* n = s_text ? s_edit : Config::personality().name;
-        snprintf(out, len, editing || s_text ? ">%s" : "%s", n);
+        if (s_text) snprintf(out, len, ">%s [%c]", n, textChar());
+        else snprintf(out, len, editing ? ">%s" : "%s", n);
         return;
     }
     if (it.kind == Kind::BIND) {
@@ -985,6 +1046,9 @@ static bool setValue(const Item& it, int v) {
                 p.dimLevel = (uint8_t)v;
                 Display::resetDimTimer();
                 break;
+            case 4:
+                StatusLed::setEnabled(v != 0);
+                return true;
 
             default: return false;
         }
@@ -1098,6 +1162,9 @@ void show(SettingsPage page) {
     s_text = false;
     s_bind = false;
     s_resetConfirm = false;
+    s_buttonsDetail = false;
+    s_buttonsProfile = 0;
+    s_buttonsActionScroll = 0;
     s_keyWas = true;
     s_openMs = millis();
     if (page == SettingsPage::CONNECT) {
@@ -1125,19 +1192,22 @@ bool isActive() { return s_active; }
 SettingsPage page() { return s_page; }
 
 const char* bottomHint() {
-    if (s_resetConfirm) return "ENT RESET  ESC CANCEL";
+    if (s_resetConfirm) return "PWR RESET  HOLD PWR CANCEL";
     const bool showHelp = ((millis() - s_openMs) % 7500u) < 5000u;
     if (s_page == SettingsPage::CONNECT) {
         if (s_conn == ConnPhase::PASS)
-            return showHelp ? "TYPE WIFI PASSWORD" : "TYPE  BS ERASE  ENT SAVE  ESC BACK";
+            return showHelp ? "A/B CHAR  PWR ADD" : "PWR+A DEL  HOLD PWR SAVE";
         if (s_netN == 0)
-            return showHelp ? "NO NETWORKS FOUND" : "R RESCAN  ESC BACK";
-        return showHelp ? "SELECT HOME WIFI" : "^/v PICK  ENT SELECT  R RESCAN  ESC BACK";
+            return showHelp ? "NO NETWORKS FOUND" : "PWR RESCAN  HOLD PWR BACK";
+        return showHelp ? "SELECT HOME WIFI" : "A/B PICK  PWR SELECT  HOLD BACK";
     }
     if (s_page == SettingsPage::STATUS)
-        return showHelp ? "DEVICE AND STORAGE INFORMATION" : "^/v SCROLL  ESC BACK";
+        return showHelp ? "DEVICE AND STORAGE INFORMATION" : "A/B SCROLL  HOLD PWR BACK";
+    if (s_page == SettingsPage::BUTTONS) {
+        return s_buttonsDetail ? "A/B SCROLL  HOLD PWR BACK" : "A/B SELECT PROFILE  PWR OPEN";
+    }
     if (s_page == SettingsPage::RADIO_EDIT) {
-        if (!showHelp) return "^/v PICK  ENT EDIT  ESC BACK";
+        if (!showHelp) return "A/B PICK  PWR EDIT  HOLD BACK";
         if (s_idx < s_editN) {
             for (uint8_t k = 0; k < ALL_KNOBS_N; k++) {
                 if (ALL_RADIO_KNOBS[k].id == s_editItems[s_idx].id)
@@ -1146,13 +1216,13 @@ const char* bottomHint() {
         }
         return "RADIO DETAIL SETTINGS";
     }
-    if (s_text) return showHelp ? "ENTER TEXT VALUE" : "TYPE  ENT SAVE  BS ERASE  ESC CANCEL";
-    if (s_bind) return showHelp ? "PRESS A KEY TO ASSIGN" : "PRESS KEY  BS CLEAR  ESC CANCEL";
+    if (s_text) return showHelp ? "A/B CHAR  PWR ADD" : "PWR+A DEL  HOLD PWR SAVE";
+    if (s_bind) return showHelp ? "PRESS A KEY TO ASSIGN" : "PRESS BUTTON TO ASSIGN  HOLD BACK CANCEL";
     if (s_page == SettingsPage::KEYS) {
         if (showHelp && s_idx < sizeof(H_KEYS) / sizeof(H_KEYS[0])) return H_KEYS[s_idx];
-        return "ENT ASSIGN  BS CLEAR  ESC BACK";
+        return "PWR ASSIGN  HOLD PWR BACK";
     }
-    if (s_editing) return showHelp ? "ADJUST SELECTED VALUE" : "^/v CHANGE  ENT DONE  ESC BACK";
+    if (s_editing) return showHelp ? "ADJUST SELECTED VALUE" : "A/B CHANGE  PWR DONE  HOLD BACK";
     uint8_t n = 0;
     const Item* it = items(&n);
     if (it && s_idx < n) {
@@ -1179,15 +1249,15 @@ const char* bottomHint() {
         }
         if (it[s_idx].kind == Kind::TOGGLE) return "A/B MOVE  PWR TOGGLE  HOLD BACK";
         if (it[s_idx].kind == Kind::TEXT)
-            return it[s_idx].id == 16 ? "ENT TYPE CODE  ESC BACK" : "ENT TYPE NAME  ESC BACK";
+            return it[s_idx].id == 16 ? "PWR OPEN TEXT INPUT  HOLD BACK" : "PWR OPEN TEXT INPUT  HOLD BACK";
         if (it[s_idx].kind == Kind::ACTION) {
             if (s_page == SettingsPage::RADIO && it[s_idx].id == 60)
-                return "ENT OPEN EDITOR  ESC BACK";
+                return "PWR OPEN EDITOR  HOLD BACK";
             if (s_page == SettingsPage::SCENE && it[s_idx].id >= 71)
-                return "ENT OPEN SECTION  ESC BACK";
+                return "PWR OPEN SECTION  HOLD BACK";
             if (s_page == SettingsPage::SCENE_TREES && it[s_idx].id == 70)
-                return "ENT OPEN FLORA  ESC BACK";
-            return "ENT RESET RADIO  ESC BACK";
+                return "PWR OPEN FLORA  HOLD BACK";
+            return "PWR RESET RADIO  HOLD BACK";
         }
         return "A/B MOVE  PWR EDIT  HOLD BACK";
     }
@@ -1195,17 +1265,43 @@ const char* bottomHint() {
 }
 
 static void updateConnect() {
-    auto keys = Keys::keysState();
-    bool up = Keys::isKeyPressed(';');
-    bool down = Keys::isKeyPressed('.');
-    bool tick = Keys::isKeyPressed('`') ||
-                Keys::isKeyPressed(27);
-    bool erase = Keys::isKeyPressed(KEY_BACKSPACE) || keys.del;
-    bool rescan = Keys::isKeyPressed('r') ||
-                  Keys::isKeyPressed('R');
+
+    auto keys = ButtonMapper::keysState();
+    bool up = ButtonMapper::isKeyPressed(';');
+    bool down = ButtonMapper::isKeyPressed('.');
+    bool tick = ButtonMapper::isKeyPressed('`') ||
+                ButtonMapper::isKeyPressed(27);
+    bool erase = ButtonMapper::isKeyPressed(KEY_BACKSPACE) || keys.del;
+    bool rescan = ButtonMapper::isKeyPressed('r') ||
+                  ButtonMapper::isKeyPressed('R');
 
     if (s_conn == ConnPhase::PASS) {
-        if (keys.enter) {
+        // Context-specific button keyboard: A/B choose character, PWR adds,
+        // A+B changes character set, PWR+A deletes, HOLD PWR saves.
+        if (ButtonMapper::btnPWR() && ButtonMapper::btnA()) {
+            size_t L = strlen(s_edit);
+            if (L) s_edit[L - 1] = '\0';
+            s_ignoreTextPwrClick = true;
+            return;
+        }
+        if (ButtonMapper::btnA() && ButtonMapper::btnB()) {
+            s_textSet = (uint8_t)((s_textSet + 1) % TEXT_SET_COUNT);
+            s_textCharIndex = 0;
+            return;
+        }
+        if (ButtonMapper::next()) {
+            const char* set = TEXT_SETS[s_textSet % TEXT_SET_COUNT];
+            size_t n = strlen(set);
+            if (n) s_textCharIndex = (uint8_t)((s_textCharIndex + 1) % n);
+            return;
+        }
+        if (ButtonMapper::prev()) {
+            const char* set = TEXT_SETS[s_textSet % TEXT_SET_COUNT];
+            size_t n = strlen(set);
+            if (n) s_textCharIndex = (uint8_t)((s_textCharIndex + n - 1) % n);
+            return;
+        }
+        if (ButtonMapper::back()) {
             if (strlen(s_edit) > 0 && strlen(s_edit) < 8) {
                 Display::showToast("PASS MIN 8", 1000);
                 return;
@@ -1216,24 +1312,14 @@ static void updateConnect() {
             SFX::play(SFX::CONFIRM);
             return;
         }
-        if (erase) {
-            size_t L = strlen(s_edit);
-            if (L) s_edit[L - 1] = '\0';
-            return;
-        }
-        if (tick) {
-            s_conn = ConnPhase::LIST;
-            s_text = false;
-            SFX::play(SFX::BACK_NAV);
-            return;
-        }
-        for (char c : keys.word) {
-            if (c < 32 || c >= 127 || c == '`') continue;
+        if (keys.enter) {
+            if (s_ignoreTextPwrClick) { s_ignoreTextPwrClick = false; return; }
             size_t L = strlen(s_edit);
             if (L + 1 < sizeof(s_edit) && L < 63) {
-                s_edit[L] = c;
+                s_edit[L] = textChar();
                 s_edit[L + 1] = '\0';
             }
+            return;
         }
         return;
     }
@@ -1270,6 +1356,8 @@ static void updateConnect() {
         return;
     }
     s_edit[0] = '\0';
+    resetTextPicker();
+    s_ignoreTextPwrClick = false;
     s_conn = ConnPhase::PASS;
     s_text = true;
     SFX::play(SFX::MENU_CLICK);
@@ -1278,17 +1366,19 @@ static void updateConnect() {
 void update() {
     if (!s_active) return;
     if (App::windowHidden()) return;
-    if (!keyNewPress(s_keyWas)) return;
+    if (s_ignoreTextPwrClick && !ButtonMapper::btnPWR() && !ButtonMapper::btnA() && !ButtonMapper::btnB() && !ButtonMapper::keysState().enter)
+        s_ignoreTextPwrClick = false;
+    if (!ButtonMapper::keyNewPress(s_keyWas)) return;
 
     if (s_page == SettingsPage::CONNECT) {
         updateConnect();
         return;
     }
     if (s_page == SettingsPage::STATUS) {
-        auto keys = Keys::keysState();
-        bool up = Keys::isKeyPressed(';');
-        bool down = Keys::isKeyPressed('.');
-        if (keyEsc()) {
+        auto keys = ButtonMapper::keysState();
+        bool up = ButtonMapper::isKeyPressed(';');
+        bool down = ButtonMapper::isKeyPressed('.');
+        if (ButtonMapper::back()) {
             hide();
             return;
         }
@@ -1304,11 +1394,51 @@ void update() {
         return;
     }
 
-    auto keys = Keys::keysState();
-    bool up = Keys::isKeyPressed(';');
-    bool down = Keys::isKeyPressed('.');
-    bool tick = keyEsc();
-    bool erase = Keys::isKeyPressed(KEY_BACKSPACE) || keys.del;
+    if (s_page == SettingsPage::BUTTONS) {
+        bool up = ButtonMapper::prev();
+        bool down = ButtonMapper::next();
+        if (ButtonMapper::back()) {
+            if (s_buttonsDetail) {
+                s_buttonsDetail = false;
+                s_buttonsActionScroll = 0;
+                SFX::play(SFX::BACK_NAV);
+            } else hide();
+            return;
+        }
+        if (s_buttonsDetail) {
+            const ButtonPreviewProfile& profile = BUTTON_PREVIEW[s_buttonsProfile];
+            if (up && s_buttonsActionScroll > 0) {
+                s_buttonsActionScroll--;
+                SFX::play(SFX::MENU_CLICK);
+            } else if (down && s_buttonsActionScroll + 3 < profile.count) {
+                s_buttonsActionScroll++;
+                SFX::play(SFX::MENU_CLICK);
+            }
+        } else {
+            if (up && s_idx > 0) {
+                s_idx--;
+                if (s_idx < s_scroll) s_scroll = s_idx;
+                SFX::play(SFX::MENU_CLICK);
+            } else if (down && s_idx + 1 < BUTTON_PREVIEW_N) {
+                s_idx++;
+                if (s_idx >= s_scroll + 4) s_scroll = (uint8_t)(s_idx - 3);
+                SFX::play(SFX::MENU_CLICK);
+            }
+            else if (ButtonMapper::keysState().enter) {
+                s_buttonsProfile = s_idx;
+                s_buttonsDetail = true;
+                s_buttonsActionScroll = 0;
+                SFX::play(SFX::MENU_CLICK);
+            }
+        }
+        return;
+    }
+
+    auto keys = ButtonMapper::keysState();
+    bool up = ButtonMapper::isKeyPressed(';');
+    bool down = ButtonMapper::isKeyPressed('.');
+    bool tick = ButtonMapper::back();
+    bool erase = ButtonMapper::isKeyPressed(KEY_BACKSPACE) || keys.del;
     bool esc = tick;
 
     if (s_resetConfirm) {
@@ -1330,7 +1460,31 @@ void update() {
     const Item& cur = list[s_idx < n ? s_idx : 0];
 
     if (s_text) {
-        if (keys.enter) {
+        // The same on-screen character picker is used for NAME and CODE fields.
+        if (ButtonMapper::btnPWR() && ButtonMapper::btnA()) {
+            size_t L = strlen(s_edit);
+            if (L) s_edit[L - 1] = '\0';
+            s_ignoreTextPwrClick = true;
+            return;
+        }
+        if (ButtonMapper::btnA() && ButtonMapper::btnB()) {
+            s_textSet = (uint8_t)((s_textSet + 1) % TEXT_SET_COUNT);
+            s_textCharIndex = 0;
+            return;
+        }
+        if (ButtonMapper::next()) {
+            const char* set = TEXT_SETS[s_textSet % TEXT_SET_COUNT];
+            size_t n = strlen(set);
+            if (n) s_textCharIndex = (uint8_t)((s_textCharIndex + 1) % n);
+            return;
+        }
+        if (ButtonMapper::prev()) {
+            const char* set = TEXT_SETS[s_textSet % TEXT_SET_COUNT];
+            size_t n = strlen(set);
+            if (n) s_textCharIndex = (uint8_t)((s_textCharIndex + n - 1) % n);
+            return;
+        }
+        if (ButtonMapper::back()) {
             if (cur.id == 16) {
                 auto same = [](const char* a, const char* b) {
                     while (*a && *b) {
@@ -1367,21 +1521,12 @@ void update() {
             Display::showToast("NAME SAVED", 900);
             return;
         }
-        if (erase) {
+        if (keys.enter) {
+            if (s_ignoreTextPwrClick) { s_ignoreTextPwrClick = false; return; }
             size_t L = strlen(s_edit);
-            if (L) s_edit[L - 1] = '\0';
-            return;
-        }
-        if (tick) {
-            s_text = false;
-            SFX::play(SFX::BACK_NAV);
-            return;
-        }
-        for (char c : keys.word) {
-            if (c < 32 || c >= 127 || c == '`') continue;
-            size_t L = strlen(s_edit);
-            if (L + 1 < sizeof(s_edit) && L < 16) {
-                s_edit[L] = c;
+            const size_t maxLen = cur.id == 16 ? 16 : 20;
+            if (L < maxLen && L + 1 < sizeof(s_edit)) {
+                s_edit[L] = textChar();
                 s_edit[L + 1] = '\0';
             }
         }
@@ -1564,6 +1709,8 @@ void update() {
             strncpy(s_edit, Config::personality().name, sizeof(s_edit) - 1);
             s_edit[sizeof(s_edit) - 1] = '\0';
         }
+        resetTextPicker();
+        s_ignoreTextPwrClick = false;
         s_text = true;
         SFX::play(SFX::MENU_CLICK);
         return;
@@ -1600,6 +1747,13 @@ static void drawConnect(M5Canvas& canvas) {
         char show[40];
         snprintf(show, sizeof(show), ">%s", s_edit);
         canvas.drawString(show, 10, 68);
+        canvas.setTextColor(UI_TITLE);
+        char pick[48];
+        snprintf(pick, sizeof(pick), "CHAR [%c] SET %u", textChar(), (unsigned)(s_textSet + 1));
+        canvas.drawString(pick, 8, 88);
+        canvas.setTextColor(UI_DIM);
+        canvas.drawString("A/B CHAR  PWR ADD", 8, 101);
+        canvas.drawString("PWR+A DEL  HOLD SAVE", 8, 113);
         return;
     }
 
@@ -1712,6 +1866,58 @@ static void drawStatus(M5Canvas& canvas) {
 }
 
 void draw(M5Canvas& canvas) {
+    if (s_page == SettingsPage::BUTTONS) {
+        const uint16_t UI_BG = 0x2145, UI_PANEL = 0x3A8A, UI_TITLE = 0xFFE0;
+        const uint16_t UI_TEXT = 0xEF5D, UI_DIM = 0x9CD3, UI_SEL = 0xFDB6;
+        canvas.fillSprite(UI_BG);
+        canvas.setTextDatum(top_center);
+        canvas.setTextSize(2);
+        canvas.setTextColor(UI_TITLE);
+        if (!s_buttonsDetail) {
+            canvas.drawString("BUTTONS", DISPLAY_W / 2, 2);
+            canvas.drawLine(10, 20, DISPLAY_W - 10, 20, UI_TITLE);
+            canvas.setTextDatum(top_left);
+            canvas.setTextSize(1);
+            for (uint8_t i = 0; i < 4 && s_scroll + i < BUTTON_PREVIEW_N; i++) {
+                uint8_t idx = s_scroll + i;
+                int y = 26 + i * 17;
+                bool selected = idx == s_idx;
+                canvas.fillRoundRect(6, y, DISPLAY_W - 12, 15, 2, selected ? UI_SEL : UI_PANEL);
+                canvas.setTextColor(selected ? UI_BG : UI_TEXT);
+                canvas.drawString(BUTTON_PREVIEW[idx].name, 12, y + 1);
+            }
+            canvas.setTextDatum(top_right);
+            canvas.setTextSize(1);
+            canvas.setTextColor(UI_DIM);
+            canvas.drawString("PREVIEW", DISPLAY_W - 8, 8);
+        } else {
+            const ButtonPreviewProfile& profile = BUTTON_PREVIEW[s_buttonsProfile];
+            canvas.drawString(profile.name, DISPLAY_W / 2, 2);
+            canvas.drawLine(5, 20, DISPLAY_W - 5, 20, UI_TITLE);
+            canvas.setTextDatum(top_left);
+            canvas.setTextSize(1);
+            canvas.setTextColor(UI_DIM);
+            canvas.drawString("ACTION", 8, 24);
+            canvas.setTextDatum(top_right);
+            canvas.drawString("BUTTON", DISPLAY_W - 8, 24);
+            for (uint8_t i = 0; i < 3 && s_buttonsActionScroll + i < profile.count; i++) {
+                const ButtonPreviewAction& action = profile.actions[s_buttonsActionScroll + i];
+                int y = 34 + i * 19;
+                canvas.fillRoundRect(5, y, DISPLAY_W - 10, 17, 2, UI_PANEL);
+                canvas.setTextDatum(top_left);
+                canvas.setTextColor(UI_TEXT);
+                canvas.drawString(action.action, 9, y + 2);
+                canvas.setTextDatum(top_right);
+                canvas.setTextColor(UI_TITLE);
+                canvas.drawString(action.binding, DISPLAY_W - 9, y + 2);
+            }
+        }
+        canvas.setTextDatum(top_left);
+        canvas.setTextSize(1);
+        canvas.setTextColor(UI_DIM);
+        canvas.drawString(bottomHint(), 5, MAIN_H - 10);
+        return;
+    }
     if (s_page == SettingsPage::CONNECT) {
         drawConnect(canvas);
         return;
@@ -1786,7 +1992,7 @@ void draw(M5Canvas& canvas) {
         canvas.setTextColor(0xFFE0);
         canvas.drawString("RESET RADIO SETTINGS?", DISPLAY_W / 2, boxY + 7);
         canvas.setTextColor(UI_TEXT);
-        canvas.drawString("ENT = RESET   ESC = CANCEL",
+        canvas.drawString("PWR = RESET   HOLD PWR = CANCEL",
                           DISPLAY_W / 2, boxY + 23);
         canvas.setTextDatum(top_left);
     }

@@ -1,4 +1,4 @@
-﻿// "PORKCHOP" capture method - a Porkchop-style composite of the OURS / PAN
+// "PORKCHOP" capture method - a Porkchop-style composite of the OURS / PAN
 // primitives, lifted onto a smarter per-AP scoring + cooldown loop. The
 // original M5PORKCHOP picks ONE target at a time and stays on it (RSSI EMA,
 // client count, beacon stability, activity); once a pair lands it walks

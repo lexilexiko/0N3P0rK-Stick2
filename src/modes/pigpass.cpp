@@ -1,4 +1,4 @@
-﻿// PigPass Mode - WiFi Password Cracker (Brute Force WPA2)
+// PigPass Mode - WiFi Password Cracker (Brute Force WPA2)
 // Cracks WPA2 PSK using PCAP handshake + wordlist
 //
 // Speed path (from Bruce wifi_recover technique, single-core on Cardputer):
@@ -2007,12 +2007,12 @@ void PigpassMode::drawUI(M5Canvas& canvas) {
 }
 
 void PigpassMode::handleMaskInput() {
-    auto keys = Keys::keysState();
-    bool back = keyEsc();
-    bool up = Keys::isKeyPressed(';');
-    bool down = Keys::isKeyPressed('.');
-    bool lenDown = Keys::isKeyPressed(',');
-    bool lenUp = Keys::isKeyPressed('/');
+    auto keys = ButtonMapper::keysState();
+    bool back = ButtonMapper::back();
+    bool up = ButtonMapper::isKeyPressed(';');
+    bool down = ButtonMapper::isKeyPressed('.');
+    bool lenDown = ButtonMapper::isKeyPressed(',');
+    bool lenUp = ButtonMapper::isKeyPressed('/');
 
     if (back) {
         transitionState(PigpassState::SELECT_WORDLIST);
@@ -2046,7 +2046,7 @@ void PigpassMode::handleMaskInput() {
 }
 
 void PigpassMode::handleInput() {
-    bool anyPressed = Keys::isPressed();
+    bool anyPressed = ButtonMapper::isPressed();
     if (!anyPressed) {
         keyWasPressed = false;
         return;
@@ -2054,10 +2054,10 @@ void PigpassMode::handleInput() {
     if (keyWasPressed) return;
     keyWasPressed = true;
 
-    auto keys = Keys::keysState();
-    bool back = keyEsc();
-    bool up = Keys::isKeyPressed(';');
-    bool down = Keys::isKeyPressed('.');
+    auto keys = ButtonMapper::keysState();
+    bool back = ButtonMapper::back();
+    bool up = ButtonMapper::isKeyPressed(';');
+    bool down = ButtonMapper::isKeyPressed('.');
 
     if (state == PigpassState::SELECT_MASK) {
         handleMaskInput();
@@ -2077,8 +2077,8 @@ void PigpassMode::handleInput() {
 
         // Handshake tabs: , / like LOOT (WPASEC / PWNCRACK)
         if (state == PigpassState::SELECT_HANDSHAKE &&
-            (Keys::isKeyPressed(',') ||
-             Keys::isKeyPressed('/'))) {
+            (ButtonMapper::isKeyPressed(',') ||
+             ButtonMapper::isKeyPressed('/'))) {
             hsTab = (hsTab == PigpassHsTab::PCAP)
                         ? PigpassHsTab::HC22000
                         : PigpassHsTab::PCAP;
@@ -2270,22 +2270,22 @@ void PigpassMode::getStatusLine(char* out, size_t len) {
     if (showHelp) {
         switch (state) {
             case PigpassState::SELECT_HANDSHAKE:
-                snprintf(out, len, "^/v MOVE  </> TAB  ENT OPEN  ESC BACK");
+                snprintf(out, len, "A/B MOVE  PWR OPEN  HOLD PWR BACK");
                 return;
             case PigpassState::SELECT_WORDLIST:
-                snprintf(out, len, "^/v MOVE  ENT SELECT  ESC BACK");
+                snprintf(out, len, "A/B MOVE  PWR SELECT  HOLD PWR BACK");
                 return;
             case PigpassState::SELECT_MASK:
-                snprintf(out, len, "^/v SET  </> LEN  ENT START  ESC BACK");
+                snprintf(out, len, "A/B SET CHARSET  PWR START  HOLD PWR BACK");
                 return;
             case PigpassState::RUNNING:
-                snprintf(out, len, "ENT PAUSE  ESC SAVE AND EXIT");
+                snprintf(out, len, "PWR PAUSE  HOLD PWR SAVE AND EXIT");
                 return;
             case PigpassState::PAUSED:
-                snprintf(out, len, "ENT RESUME  ESC SAVE AND EXIT");
+                snprintf(out, len, "PWR RESUME  HOLD PWR SAVE AND EXIT");
                 return;
             case PigpassState::DONE:
-                snprintf(out, len, "ENT / ESC EXIT");
+                snprintf(out, len, "PWR OR HOLD PWR EXIT");
                 return;
             default:
                 break;

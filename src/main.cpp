@@ -1,4 +1,4 @@
-﻿// 0N3P0rK - Tamagotchi pig + barn on M5StickC Plus 2
+// 0N3P0rK - Tamagotchi pig + barn on M5StickC Plus 2
 
 #include <M5Unified.h>
 #include <WiFi.h>
@@ -20,21 +20,9 @@
 #include "modes/evilpig.h"
 #include "modes/pigpass.h"
 #include "ui/keys.h"
-
-static void bootLed(bool on) {
-    // StickC Plus 2 red LED is GPIO 19, active low.
-    pinMode(19, OUTPUT);
-    digitalWrite(19, on ? LOW : HIGH);
-}
-
-static void bootBlinks(int n) {
-    for (int i = 0; i < n; ++i) {
-        bootLed(true);
-        delay(140);
-        bootLed(false);
-        delay(140);
-    }
-}
+#include "board/status_led.h"
+#include "piglet/wolf.h"
+#include "piglet/scene_layers.h"
 
 static void bootMark(const char* step) {
     Serial.println(step);
@@ -77,7 +65,6 @@ void setup() {
     digitalWrite(4, HIGH);
     pinMode(27, OUTPUT);
     digitalWrite(27, HIGH);
-    bootBlinks(1);   // 1 blink: CPU is running, setup() started
 
     Serial.begin(115200);
     delay(80);
@@ -109,7 +96,6 @@ void setup() {
     // Autodetect restores GPIO state. Hold must stay high or Plus2 cuts power.
     pinMode(4, OUTPUT);
     digitalWrite(4, HIGH);
-    bootBlinks(2);   // 2 blinks: M5.begin returned
     Serial.printf("[BOOT] M5 board=%d (Plus2 is 5)\n", (int)M5.getBoard());
     M5.Display.setRotation(3);
     M5.Display.setBrightness(255);
@@ -131,17 +117,17 @@ void setup() {
     } else {
         bootMark("[BOOT] LittleFS ok");
     }
-    Keys::begin();
+    ButtonMapper::begin();
     Serial.printf("[BOOT] board=%s\n", Board::modelLabel());
     Serial.flush();
 
     Config::init();
+    StatusLed::begin();
     XP::begin();
     M5.Display.setBrightness(255);
 
     bootMark("[BOOT] display init");
     Display::init();
-    bootBlinks(3);   // 3 blinks: canvas exists
     SFX::init();
     bootMark("[BOOT] avatar");
     Avatar::init();
@@ -163,25 +149,21 @@ void setup() {
     Serial.printf("[BOOT] wifi mode ssid=%s ip=%s\n", s.ssid, s.ip);
     Serial.printf("[BOOT] pig=%s ready\n", Config::personality().name);
     Serial.flush();
-    bootLed(false);
 }
 
 static unsigned long s_lastHeapLog = 0;
-static unsigned long s_ledTick = 0;
-static bool s_ledOn = false;
+
+// StatusLed calls this lightweight bridge to avoid coupling its driver to the farm scene.
+bool statusLedWolfIsVisible() {
+    return App::mode() == AppMode::FARM && SceneLayers::wolf && Wolf::isActive();
+}
 
 void loop() {
-    // Heartbeat: LED keeps ticking only if loop() is actually running.
-    if (millis() - s_ledTick > 1000) {
-        s_ledTick = millis();
-        s_ledOn = !s_ledOn;
-        bootLed(s_ledOn);
-    }
-
     M5.update();
-    Keys::update();
+    ButtonMapper::update();
     App::loop();
     Display::update();
+    StatusLed::update();
     SFX::update();
     XP::tick();
     Cap::loop();

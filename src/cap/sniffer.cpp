@@ -1,4 +1,4 @@
-﻿// cap/sniffer.cpp
+// cap/sniffer.cpp
 // Promiscuous EAPOL capture -> one classic pcap per BSSID.
 
 #include "sniffer.h"
@@ -14,6 +14,7 @@
 #include "../ui/display.h"
 #include "../ui/keys.h"
 #include "../audio/sfx.h"
+#include "../board/status_led.h"
 #include <M5Unified.h>
 #include <esp_wifi.h>
 #include <esp_random.h>
@@ -500,7 +501,7 @@ static void buildSkipMenu() {
 }
 
 static bool keyEdge(char key, bool& wasPressed) {
-    bool pressed = Keys::isKeyPressed(key);
+    bool pressed = ButtonMapper::isKeyPressed(key);
     bool edge = pressed && !wasPressed;
     wasPressed = pressed;
     return edge;
@@ -1690,6 +1691,7 @@ static bool writeFrameNow(const Slot& s) {
         return false;
     }
     s_cnt.framesWritten++;
+    StatusLed::captureEvent();
     memcpy(s_kickBssid, s.bssid, 6);
     memcpy(s_kickSta, s.station, 6);
     s_kickStaOk = (s.station[0] & 0x01) == 0;
@@ -2624,7 +2626,7 @@ static void updateSkipMenu() {
     // Separate key latches: keyNewPress is intentionally not used here because
     // navigation, Enter and Escape can be pressed in the same keyboard frame.
     bool enter = keyEdge(KEY_ENTER, s_skipMenuEnterWas);
-    if (keyEsc()) {
+    if (ButtonMapper::back()) {
         closeSkipMenu();
         return;
     }
@@ -2669,8 +2671,18 @@ static void updateSkipMenu() {
 void loop() {
     if (!s_running) return;
 
-    bool qPressed = Keys::isKeyPressed('q') ||
-                    Keys::isKeyPressed('Q');
+    // StickC Plus 2 hardware controls while the Light/Aggressive capture
+    // screen is active: hold PWR = Q (skip-list menu), hold A+B = STOP.
+    // Check the A+B chord before the skip-menu handler so it cannot also
+    // move/select an entry on the same frame.
+    const bool physicalAttackMode =
+        s_mode == RunMode::Light || s_mode == RunMode::Aggressive;
+    if (physicalAttackMode && ButtonMapper::comboAB()) {
+        stop();
+        return;
+    }
+
+    bool qPressed = ButtonMapper::isKeyPressed('q');
     bool qEdge = qPressed && !s_skipMenuQWas;
     s_skipMenuQWas = qPressed;
 
@@ -2687,8 +2699,8 @@ void loop() {
 
     // Z immediately skips the focused AP and persists it when SD is available.
     {
-        bool z = Keys::isKeyPressed('z') ||
-                 Keys::isKeyPressed('Z');
+        bool z = ButtonMapper::isKeyPressed('z') ||
+                 ButtonMapper::isKeyPressed('Z');
         if (z && !s_skipKeyWas) skipCurrent();
         s_skipKeyWas = z;
     }

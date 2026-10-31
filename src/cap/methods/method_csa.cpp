@@ -1,4 +1,4 @@
-﻿// CSA-herd capture method: targets PMF-capable APs that OURS skips and PAN
+// CSA-herd capture method: targets PMF-capable APs that OURS skips and PAN
 // only grazes. Idea is simple - deauth gets dropped by Management Frame
 // Protection, but a forged CSA beacon with a "move to channel N" element
 // is still processed by clients because it's a legitimate (if spoofed)

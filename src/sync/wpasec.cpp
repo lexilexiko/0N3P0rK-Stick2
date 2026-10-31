@@ -1,4 +1,4 @@
-﻿// sync/wpasec.cpp
+// sync/wpasec.cpp
 #include "wpasec.h"
 #include "../storage/littlefs_ops.h"
 #include "../cap/capture_name.h"

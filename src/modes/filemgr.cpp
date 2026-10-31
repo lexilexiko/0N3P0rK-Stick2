@@ -1,4 +1,4 @@
-﻿#include "filemgr.h"
+#include "filemgr.h"
 #include "../storage/littlefs_ops.h"
 #include "../ui/display.h"
 #include "../ui/keys.h"
@@ -625,65 +625,65 @@ uint16_t FileMgrMode::cursorLine() {
 
 void FileMgrMode::handleBrowseInput() {
 
-    if (keyEsc() || keyMin()) {
+    if (ButtonMapper::back() || false) {
         back();
         return;
     }
-    if (Keys::isKeyPressed(';')) {
+    if (ButtonMapper::isKeyPressed(';')) {
         if (sel > 0) --sel;
         if (sel < scroll) scroll = sel;
         return;
     }
-    if (Keys::isKeyPressed('.')) {
+    if (ButtonMapper::isKeyPressed('.')) {
         if (entryCount && sel + 1 < entryCount) ++sel;
         if (sel >= scroll + VIS_ROWS) scroll = (uint16_t)(sel - VIS_ROWS + 1);
         return;
     }
-    if (Keys::isKeyPressed(',') || Keys::isKeyPressed('/')) {
-        if (Keys::isKeyPressed(',')) {
+    if (ButtonMapper::isKeyPressed(',') || ButtonMapper::isKeyPressed('/')) {
+        if (ButtonMapper::isKeyPressed(',')) {
             back();
             return;
         }
         if (entryCount) openSelected();
         return;
     }
-    if (Keys::keysState().enter) {
+    if (ButtonMapper::keysState().enter) {
         if (entryCount) openSelected();
         return;
     }
-    if (Keys::isKeyPressed('n') || Keys::isKeyPressed('N')) {
+    if (ButtonMapper::isKeyPressed('n') || ButtonMapper::isKeyPressed('N')) {
         beginNameInput(NameAction::NEW_FILE);
         return;
     }
-    if (Keys::isKeyPressed('m') || Keys::isKeyPressed('M')) {
+    if (ButtonMapper::isKeyPressed('m') || ButtonMapper::isKeyPressed('M')) {
         beginNameInput(NameAction::NEW_DIR);
         return;
     }
-    if ((Keys::isKeyPressed('r') || Keys::isKeyPressed('R')) && entryCount) {
+    if ((ButtonMapper::isKeyPressed('r') || ButtonMapper::isKeyPressed('R')) && entryCount) {
         beginNameInput(NameAction::RENAME);
         return;
     }
-    if ((Keys::isKeyPressed('c') || Keys::isKeyPressed('C')) && entryCount) {
+    if ((ButtonMapper::isKeyPressed('c') || ButtonMapper::isKeyPressed('C')) && entryCount) {
         buildFullPath(clipboardPath, PATH_BUF, entries[sel].name);
         clipboardAction = ClipboardAction::COPY;
         Display::showToast("COPIED TO CLIPBOARD", 800);
         return;
     }
-    if ((Keys::isKeyPressed('v') || Keys::isKeyPressed('V')) && entryCount) {
+    if ((ButtonMapper::isKeyPressed('v') || ButtonMapper::isKeyPressed('V')) && entryCount) {
         buildFullPath(clipboardPath, PATH_BUF, entries[sel].name);
         clipboardAction = ClipboardAction::MOVE;
         Display::showToast("READY TO MOVE  P", 900);
         return;
     }
-    if (Keys::isKeyPressed('p') || Keys::isKeyPressed('P')) {
+    if (ButtonMapper::isKeyPressed('p') || ButtonMapper::isKeyPressed('P')) {
         pasteClipboard();
         return;
     }
-    if ((Keys::isKeyPressed('x') || Keys::isKeyPressed('X')) && entryCount) {
+    if ((ButtonMapper::isKeyPressed('x') || ButtonMapper::isKeyPressed('X')) && entryCount) {
         phase = Phase::CONFIRM_DEL;
         return;
     }
-    if (Keys::isKeyPressed('t') || Keys::isKeyPressed('T')) {
+    if (ButtonMapper::isKeyPressed('t') || ButtonMapper::isKeyPressed('T')) {
         refreshList();
         return;
     }
@@ -691,15 +691,15 @@ void FileMgrMode::handleBrowseInput() {
 
 void FileMgrMode::handleViewInput() {
 
-    if (keyEsc() || keyMin()) {
+    if (ButtonMapper::back() || false) {
         back();
         return;
     }
-    if (Keys::isKeyPressed(';')) {
+    if (ButtonMapper::isKeyPressed(';')) {
         if (viewTopLine) --viewTopLine;
-    } else if (Keys::isKeyPressed('.')) {
+    } else if (ButtonMapper::isKeyPressed('.')) {
         ++viewTopLine;
-    } else if (Keys::isKeyPressed('e') || Keys::isKeyPressed('E')) {
+    } else if (ButtonMapper::isKeyPressed('e') || ButtonMapper::isKeyPressed('E')) {
         cursor = bufLen;
         phase = Phase::EDIT;
     }
@@ -707,12 +707,12 @@ void FileMgrMode::handleViewInput() {
 
 void FileMgrMode::handleEditInput() {
 
-    auto keys = Keys::keysState();
-    if (keyEsc()) {
+    auto keys = ButtonMapper::keysState();
+    if (ButtonMapper::back()) {
         back();
         return;
     }
-    if (Keys::isKeyPressed(KEY_BACKSPACE)) {
+    if (ButtonMapper::isKeyPressed(KEY_BACKSPACE)) {
         if (cursor) {
             memmove(buf + cursor - 1, buf + cursor, bufLen - cursor);
             --cursor;
@@ -722,10 +722,10 @@ void FileMgrMode::handleEditInput() {
         }
         return;
     }
-    if (Keys::isKeyPressed(',')) { if (cursor) --cursor; return; }
-    if (Keys::isKeyPressed('/')) { if (cursor < bufLen) ++cursor; return; }
-    if (Keys::isKeyPressed(';') || Keys::isKeyPressed('.')) {
-        bool up = Keys::isKeyPressed(';');
+    if (ButtonMapper::isKeyPressed(',')) { if (cursor) --cursor; return; }
+    if (ButtonMapper::isKeyPressed('/')) { if (cursor < bufLen) ++cursor; return; }
+    if (ButtonMapper::isKeyPressed(';') || ButtonMapper::isKeyPressed('.')) {
+        bool up = ButtonMapper::isKeyPressed(';');
         uint16_t p = cursor;
         if (up) {
             while (p > 0 && buf[p - 1] != '\n') --p;
@@ -756,7 +756,7 @@ void FileMgrMode::handleEditInput() {
 }
 
 void FileMgrMode::update() {
-    if (!running || App::windowHidden() || !keyNewPress(keyLatch)) return;
+    if (!running || App::windowHidden() || !ButtonMapper::keyNewPress(keyLatch)) return;
 
 
     if (phase == Phase::BROWSE) {
@@ -766,20 +766,20 @@ void FileMgrMode::update() {
     } else if (phase == Phase::EDIT) {
         handleEditInput();
     } else if (phase == Phase::NAME_INPUT) {
-        if (keyEsc()) {
+        if (ButtonMapper::back()) {
             phase = Phase::BROWSE;
             return;
         }
-        if (Keys::isKeyPressed(KEY_BACKSPACE)) {
+        if (ButtonMapper::isKeyPressed(KEY_BACKSPACE)) {
             size_t len = strlen(nameBuf);
             if (len) nameBuf[len - 1] = '\0';
             return;
         }
-        if (Keys::keysState().enter) {
+        if (ButtonMapper::keysState().enter) {
             commitNameInput();
             return;
         }
-        for (char ch : Keys::keysState().word) {
+        for (char ch : ButtonMapper::keysState().word) {
             if (ch >= 32 && ch < 127 && strlen(nameBuf) + 1 < NAME_BUF) {
                 size_t len = strlen(nameBuf);
                 nameBuf[len] = ch;
@@ -787,10 +787,10 @@ void FileMgrMode::update() {
             }
         }
     } else if (phase == Phase::CONFIRM_DEL) {
-        if (keyEsc() || keyMin() || Keys::isKeyPressed('n') ||
-            Keys::isKeyPressed('N')) {
+        if (ButtonMapper::back() || false || ButtonMapper::isKeyPressed('n') ||
+            ButtonMapper::isKeyPressed('N')) {
             phase = Phase::BROWSE;
-        } else if (Keys::isKeyPressed('y') || Keys::isKeyPressed('Y')) {
+        } else if (ButtonMapper::keysState().enter || ButtonMapper::isKeyPressed('y') || ButtonMapper::isKeyPressed('Y')) {
             if (sel < entryCount) {
                 char path[PATH_BUF];
                 buildFullPath(path, sizeof(path), entries[sel].name);
@@ -802,13 +802,13 @@ void FileMgrMode::update() {
             phase = Phase::BROWSE;
         }
     } else if (phase == Phase::CONFIRM_OVERWRITE) {
-        if (keyEsc() || keyMin() || Keys::isKeyPressed('n') ||
-            Keys::isKeyPressed('N')) {
+        if (ButtonMapper::back() || false || ButtonMapper::isKeyPressed('n') ||
+            ButtonMapper::isKeyPressed('N')) {
             phase = strstr(statusMsg, "PASTE")
                 ? Phase::BROWSE : Phase::NAME_INPUT;
             return;
         }
-        if (Keys::isKeyPressed('y') || Keys::isKeyPressed('Y')) {
+        if (ButtonMapper::keysState().enter || ButtonMapper::isKeyPressed('y') || ButtonMapper::isKeyPressed('Y')) {
             char target[PATH_BUF];
             if (statusMsg[0] && strstr(statusMsg, "PASTE")) {
                 snprintf(target, sizeof(target), "%s%s%s", curPath,
@@ -832,8 +832,8 @@ void FileMgrMode::update() {
             }
         }
     } else if (phase == Phase::IMAGE || phase == Phase::INFO) {
-        if (keyEsc() || keyMin()) back();
-        else if (phase == Phase::INFO && Keys::isKeyPressed('e')) {
+        if (ButtonMapper::back() || false) back();
+        else if (phase == Phase::INFO && ButtonMapper::isKeyPressed('e')) {
             phase = Phase::BROWSE;
             openSelected();
         }
@@ -851,35 +851,35 @@ void FileMgrMode::getStatusLine(char* out, size_t n) {
                 snprintf(out, n, "PARTIAL LIST %u  LOW MEM", (unsigned)entryCount);
             else if (page == 0) snprintf(out, n, "%u FILES  %s",
                                          (unsigned)entryCount, curPath);
-            else if (page == 1) snprintf(out, n, "^/v SELECT  ENT OPEN  BKSP BACK");
-            else snprintf(out, n, "N NEW  M FOLDER  R RENAME  X DEL");
+            else if (page == 1) snprintf(out, n, "A/B SELECT  PWR OPEN  HOLD PWR BACK");
+            else snprintf(out, n, "FILE ACTIONS: USE KEYBOARD SHORTCUTS");
             if (page == 2 && clipboardAction != ClipboardAction::EMPTY)
-                snprintf(out, n, "%s CLIP  P PASTE",
+                snprintf(out, n, "%s READY  PASTE NEEDS KEYBOARD",
                          clipboardAction == ClipboardAction::COPY ? "COPY" : "MOVE");
             break;
         case Phase::VIEW:
-            snprintf(out, n, "TEXT  ^/v SCROLL  E EDIT  BKSP BACK");
+            snprintf(out, n, "A/B SCROLL  PWR EDIT  HOLD PWR BACK");
             break;
         case Phase::EDIT:
-            snprintf(out, n, "%s  BKSP DEL CHAR  ESC SAVE/BACK",
+            snprintf(out, n, "%s  A/B MOVE  PWR NEW LINE  HOLD PWR SAVE/BACK",
                      dirty ? "EDIT *" : "EDIT");
             break;
         case Phase::IMAGE:
-            snprintf(out, n, "IMAGE PREVIEW  BKSP BACK");
+            snprintf(out, n, "HOLD PWR BACK");
             break;
         case Phase::INFO:
-            snprintf(out, n, "FILE INFO  E OPEN  BKSP BACK");
+            snprintf(out, n, "PWR OPEN  HOLD PWR BACK");
             break;
         case Phase::NAME_INPUT:
-            snprintf(out, n, "%s NAME  ENT OK  BKSP DEL  ESC BACK",
+            snprintf(out, n, "%s NAME  PWR OK  HOLD PWR BACK",
                      nameAction == NameAction::NEW_FILE ? "NEW FILE" :
                      nameAction == NameAction::NEW_DIR ? "NEW FOLDER" : "RENAME");
             break;
         case Phase::CONFIRM_DEL:
-            snprintf(out, n, "Y DELETE  N / BKSP CANCEL");
+            snprintf(out, n, "PWR CONFIRM DELETE  HOLD BACK");
             break;
         case Phase::CONFIRM_OVERWRITE:
-            snprintf(out, n, "Y REPLACE  N / BKSP CANCEL");
+            snprintf(out, n, "PWR REPLACE  HOLD PWR CANCEL");
             break;
     }
 }

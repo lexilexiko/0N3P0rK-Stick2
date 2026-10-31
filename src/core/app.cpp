@@ -1,4 +1,4 @@
-﻿#include "app.h"
+#include "app.h"
 #include "../ui/task_manager.h"
 #include "../ui/display.h"
 #include "../ui/menu.h"
@@ -107,8 +107,8 @@ static void animTestPoll() {
     if (!Config::personality().animTest) return;
     static bool minusWas = false;
     static bool eqWas = false;
-    bool minus = Keys::btnB() || Keys::isKeyPressed('-') || Keys::isKeyPressed('_');
-    bool eq = Keys::btnA() || Keys::isKeyPressed('=') || Keys::isKeyPressed('+');
+    bool minus = ButtonMapper::btnB() || ButtonMapper::isKeyPressed('-') || ButtonMapper::isKeyPressed('_');
+    bool eq = ButtonMapper::btnA() || ButtonMapper::isKeyPressed('=') || ButtonMapper::isKeyPressed('+');
     bool prev = minus && !minusWas;
     bool next = eq && !eqWas;
     minusWas = minus;
@@ -206,11 +206,11 @@ static void farmPoll() {
     if (CardsTable::isActive()) return;  // duel owns keys + draw
     animTestPoll();
     // Hold walks. A short tap jumps, a short B tap sits. PWR is the menu.
-    bool left  = Keys::holdB();
-    bool right = Keys::holdA();
-    bool jumpKey = Keys::tapA();
+    bool left  = ButtonMapper::holdB();
+    bool right = ButtonMapper::holdA();
+    bool jumpKey = ButtonMapper::tapA();
     bool attackKey = false;
-    bool sitKey = Keys::tapB();
+    bool sitKey = ButtonMapper::tapB();
 
     static bool idleJumpWas = false;
     static bool idleAttackWas = false;
@@ -272,7 +272,7 @@ void loop() {
     if (Display::isScreenForcedOff()) return;
 
     // Any key wakes the dimmed backlight (not only isChange, not only FARM).
-    if (Keys::isPressed() || Keys::isChanged())
+    if (ButtonMapper::isPressed() || ButtonMapper::isChanged())
         Display::resetDimTimer();
 
     if (!SettingsMenu::isTyping() && !FileMgrMode::isTyping())
@@ -280,7 +280,7 @@ void loop() {
 
     if (s_mode == AppMode::FARM || windowHidden()) farmPoll();
     // PWR click is reported on release, when no button is held anymore.
-    if (s_mode == AppMode::FARM && Keys::ok()) {
+    if (s_mode == AppMode::FARM && ButtonMapper::ok()) {
         setMode(AppMode::MENU);
         return;
     }
@@ -288,12 +288,12 @@ void loop() {
     // Backspace = minimize overlay, except in file manager where it navigates back.
     if (overlayMode() && s_mode != AppMode::FILEMGR &&
         !SettingsMenu::isTyping() && !FileMgrMode::isTyping()) {
-        if (keyNewPress(s_minLatch)) {
-            if (keyMin()) {
+        if (ButtonMapper::keyNewPress(s_minLatch)) {
+            if (false) {
                 s_winHid = !s_winHid;
                 SFX::play(SFX::MENU_CLICK);
                 Display::showToast(s_winHid ? "MIN" : "WIN", 500);
-            } else if (s_winHid && keyEsc()) {
+            } else if (s_winHid && ButtonMapper::back()) {
                 setMode(AppMode::MENU);
             } else if (s_winHid && Menu::tryHotkey()) {
             }
@@ -330,7 +330,7 @@ void loop() {
         return;
     }
 
-    if (!Keys::isPressedAny() || !Keys::isChanged())
+    if (!ButtonMapper::isPressedAny() || !ButtonMapper::isChanged())
         return;
 
     if (s_mode == AppMode::LOOT || s_mode == AppMode::EVILPIG ||
@@ -339,8 +339,8 @@ void loop() {
         s_mode == AppMode::PIG || s_mode == AppMode::TUNE ||
         s_mode == AppMode::WIFI || s_mode == AppMode::TASKS) return;
 
-    char typed = Keys::typedChar();
-    bool back = keyEsc();
+    char typed = ButtonMapper::typedChar();
+    bool back = ButtonMapper::back();
 
     if (s_mode == AppMode::FARM) return;
 

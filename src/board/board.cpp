@@ -1,4 +1,4 @@
-﻿// board/board.cpp
+// board/board.cpp
 #include "board.h"
 #include <Arduino.h>
 #include <M5Unified.h>
@@ -46,7 +46,7 @@ uint32_t flashBytes() {
 }
 
 void startKeyboard() {
-    // No QWERTY keyboard on StickC Plus 2 вЂ” buttons are handled by Keys::begin().
+    // No QWERTY keyboard on StickC Plus 2 вЂ” buttons are handled by ButtonMapper::begin().
     // Keep the HOLD pin (GPIO 4) high so the device stays powered on battery.
     pinMode(4, OUTPUT);
     digitalWrite(4, HIGH);

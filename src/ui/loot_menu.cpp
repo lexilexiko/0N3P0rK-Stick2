@@ -1,4 +1,4 @@
-﻿#include "loot_menu.h"
+#include "loot_menu.h"
 #include "display.h"
 #include "keys.h"
 #include "../core/app.h"
@@ -26,6 +26,7 @@
 
 bool LootMenu::active = false;
 bool LootMenu::keyWasPressed = false;
+static bool s_ignorePwrClickAfterChord = false;
 bool LootMenu::detailView = false;
 bool LootMenu::syncModal = false;
 bool LootMenu::diagModal = false;
@@ -411,6 +412,7 @@ void LootMenu::show() {
 
     active = true;
     detailView = false;
+    s_ignorePwrClickAfterChord = false;
     syncModal = false;
     diagModal = false;
     keyWasPressed = true;
@@ -436,6 +438,7 @@ void LootMenu::openOhc() {
 void LootMenu::hide() {
     active = false;
     detailView = false;
+    s_ignorePwrClickAfterChord = false;
     syncModal = false;
     diagModal = false;
     // Always. A finished sync already set s_syncGo to Off, and that used to
@@ -458,39 +461,33 @@ void LootMenu::hide() {
 }
 
 const char* LootMenu::getBottomHint() {
-    uint8_t hintCycle = (uint8_t)((millis() / 2500u) % 10u);
-    if (syncModal) return "ENT close";
+    uint8_t hintCycle = (uint8_t)((millis() / 2500u) % 8u);
+    if (syncModal) return "PWR CLOSE  HOLD PWR BACK";
     if (diagModal) {
-        if (hintCycle & 1) return "^/v  SCROLL LOG";
-        return "ENT  close test";
+        if (hintCycle & 1) return "A/B SCROLL LOG";
+        return "PWR CLOSE TEST";
     }
     if (detailView) {
-        if (hintCycle == 0) return "U  send this file";
-        if (hintCycle == 1) return "Q  pull results";
-        if (hintCycle == 2) return "D  delete this file";
-        if (hintCycle == 3) return "R  reload list";
-        if (hintCycle == 4) return "i  check this file";
-        return "ENT  close card";
+        if (hintCycle == 0) return "PWR CLOSE FILE DETAILS";
+        if (hintCycle == 1) return "PWR+A SEND ALL FILES";
+        if (hintCycle == 2) return "PWR+B PULL RESULTS";
+        if (hintCycle == 3) return "A+B INSPECT THIS FILE";
+        return "HOLD PWR BACK TO MENU";
     }
     if (!count) {
-        if (hintCycle == 0) return "Q  pull results";
-        if (hintCycle == 1) return "R  reload list";
-        if (hintCycle == 2) return "T  test wifi / api";
-        if (hintCycle == 3) return "</>  WP/PWN/OHC";
-        if (hintCycle == 4) return "I  check all files";
-        return "ESC  BACK";
+        if (hintCycle == 0) return "PWR+B PULL RESULTS";
+        if (hintCycle == 1) return "A/B CHANGE TAB";
+        if (hintCycle == 2) return "A+B OPEN DIAGNOSTIC";
+        return "HOLD PWR BACK";
     }
     switch (hintCycle) {
-        case 0: return "S  send all pending";
-        case 1: return "U  send this file";
-        case 2: return "Q  pull results";
-        case 3: return "D  delete this file";
-        case 4: return "R  reload list";
-        case 5: return "T  test wifi / api";
-        case 6: return "[ ]  PREV / NEXT PAGE";
-        case 7: return "i  check this file";
-        case 8: return "I  check all files";
-        default: return "</>  WP/PWN/OHC";
+        case 0: return "PWR SEND SELECTED FILE";
+        case 1: return "PWR+A SEND ALL FILES";
+        case 2: return "PWR+B PULL RESULTS";
+        case 3: return "A+B OPEN FILE DETAILS";
+        case 4: return "A/B MOVE THROUGH FILES";
+        case 5: return "HOLD A/B CHANGE SERVICE TAB";
+        default: return "HOLD PWR BACK";
     }
 }
 
@@ -836,10 +833,12 @@ void LootMenu::runInspector(bool allFiles) {
 }
 
 void LootMenu::handleInput() {
-    if (!keyNewPress(keyWasPressed)) return;
+    if (s_ignorePwrClickAfterChord && !ButtonMapper::btnPWR() && !ButtonMapper::btnA() && !ButtonMapper::btnB() && !ButtonMapper::keysState().enter)
+        s_ignorePwrClickAfterChord = false;
+    if (!ButtonMapper::keyNewPress(keyWasPressed) && !ButtonMapper::longA() && !ButtonMapper::longB()) return;
 
-    auto keys = Keys::keysState();
-    bool esc = keyEsc();
+    auto keys = ButtonMapper::keysState();
+    bool esc = ButtonMapper::back();
 
     // Inspector hook: `i` vets the selected capture, `I` the whole folder.
     // keys.word keeps the case while isKeyPressed() does not, so shift is read
@@ -848,9 +847,10 @@ void LootMenu::handleInput() {
     for (char c : keys.word) {
         if (c == 'I') { inspectAll = true; break; }
     }
-    const bool inspectKey = Keys::isKeyPressed('i') ||
-                            Keys::isKeyPressed('I');
-    if (esc) {
+    const bool inspectKey = ButtonMapper::isKeyPressed('i') ||
+                            ButtonMapper::isKeyPressed('I');
+    const bool powerChord = ButtonMapper::btnPWR() && (ButtonMapper::btnA() || ButtonMapper::btnB());
+    if (esc && !powerChord) {
         if (detailView) { detailView = false; return; }
         if (syncModal) { syncModal = false; return; }
         if (diagModal) { diagModal = false; return; }
@@ -860,37 +860,63 @@ void LootMenu::handleInput() {
 
     if (syncModal || diagModal) {
         if (diagModal) {
-            if (Keys::isKeyPressed(';') && s_diagScroll > 0)
+            if (ButtonMapper::isKeyPressed(';') && s_diagScroll > 0)
                 s_diagScroll--;
-            if (Keys::isKeyPressed('.') &&
+            if (ButtonMapper::isKeyPressed('.') &&
                 s_diagN > DIAG_VIS &&
                 s_diagScroll + DIAG_VIS < s_diagN)
                 s_diagScroll++;
         }
-        if (Keys::keysState().enter) {
-            syncModal = false;
-            diagModal = false;
+        if (ButtonMapper::keysState().enter) {
+            if (s_ignorePwrClickAfterChord) s_ignorePwrClickAfterChord = false;
+            else { syncModal = false; diagModal = false; }
         }
         return;
     }
+    // StickC Plus 2 button map for LOOT:
+    // short PWR = upload selected file; hold A/B = switch service tab once;
+    // PWR+A = upload all; PWR+B = pull results; A+B = open detail / inspect.
+    // A chord suppresses the short-PWR action that would otherwise fire on release.
+    if (ButtonMapper::btnPWR() && ButtonMapper::btnA()) {
+        s_ignorePwrClickAfterChord = true;
+        startSync(false);
+        return;
+    }
+    if (ButtonMapper::btnPWR() && ButtonMapper::btnB()) {
+        s_ignorePwrClickAfterChord = true;
+        startPullResults();
+        return;
+    }
+    if (ButtonMapper::btnA() && ButtonMapper::btnB()) {
+        if (detailView) runInspector(false);
+        else if (count) detailView = true;
+        else Display::showToast("NO FILE", 700);
+        return;
+    }
+
     if (detailView) {
-        if (Keys::isKeyPressed('u') ||
-            Keys::isKeyPressed('U')) {
+        if (ButtonMapper::keysState().enter) {
+            if (s_ignorePwrClickAfterChord) s_ignorePwrClickAfterChord = false;
+            else detailView = false;
+            return;
+        }
+        if (ButtonMapper::isKeyPressed('u') ||
+            ButtonMapper::isKeyPressed('U')) {
             startSync(true);
             return;
         }
-        if (Keys::isKeyPressed('q') ||
-            Keys::isKeyPressed('Q')) {
+        if (ButtonMapper::isKeyPressed('q') ||
+            ButtonMapper::isKeyPressed('Q')) {
             startPullResults();
             return;
         }
-        if (Keys::isKeyPressed('d') ||
-            Keys::isKeyPressed('D')) {
+        if (ButtonMapper::isKeyPressed('d') ||
+            ButtonMapper::isKeyPressed('D')) {
             deleteSelected();
             return;
         }
-        if (Keys::isKeyPressed('r') ||
-            Keys::isKeyPressed('R')) {
+        if (ButtonMapper::isKeyPressed('r') ||
+            ButtonMapper::isKeyPressed('R')) {
             reloadList();
             return;
         }
@@ -899,14 +925,24 @@ void LootMenu::handleInput() {
             runInspector(inspectAll);
             return;
         }
-        if (Keys::keysState().enter) detailView = false;
+        if (ButtonMapper::keysState().enter) detailView = false;
         return;
     }
 
-    // Left/right steps back/forward through tabs. Both wrap, so a held
-    // key cycles WPASEC -> PWNCRACK -> OHC -> WPASEC.
-    bool tabBack = Keys::isKeyPressed(',');
-    bool tabFwd = Keys::isKeyPressed('/');
+    // A/B long press switches service tab once; short press remains list navigation.
+    if (ButtonMapper::longA() || ButtonMapper::longB()) {
+        uint8_t t = (tab == Tab::WPASEC) ? 0 : (tab == Tab::PWNCRACK) ? 1 : 2;
+        t = (uint8_t)((t + (ButtonMapper::longA() ? 1u : 2u)) % 3u);
+        tab = (t == 0) ? Tab::WPASEC : (t == 1) ? Tab::PWNCRACK : Tab::OHC;
+        page = 0;
+        SFX::play(SFX::MENU_CLICK);
+        scan();
+        return;
+    }
+
+    // Legacy keyboard aliases remain available for builds with a keyboard.
+    bool tabBack = ButtonMapper::isKeyPressed(',');
+    bool tabFwd = ButtonMapper::isKeyPressed('/');
     if (tabBack || tabFwd) {
         uint8_t t = (tab == Tab::WPASEC) ? 0 : (tab == Tab::PWNCRACK) ? 1 : 2;
         t = (uint8_t)((t + (tabBack ? 2u : 1u)) % 3u);
@@ -917,18 +953,18 @@ void LootMenu::handleInput() {
         return;
     }
 
-    if (Keys::isKeyPressed('[')) {
+    if (ButtonMapper::isKeyPressed('[')) {
         if (page > 0) gotoPage((uint8_t)(page - 1), false);
         else Display::showToast("FIRST PAGE", 500);
         return;
     }
-    if (Keys::isKeyPressed(']')) {
+    if (ButtonMapper::isKeyPressed(']')) {
         if (hasMore) gotoPage((uint8_t)(page + 1), false);
         else Display::showToast("LAST PAGE", 500);
         return;
     }
 
-    if (Keys::isKeyPressed(';')) {
+    if (ButtonMapper::isKeyPressed(';')) {
         if (selected > 0) {
             selected--;
             if (selected < scroll) scroll = selected;
@@ -940,7 +976,7 @@ void LootMenu::handleInput() {
         }
         SFX::play(SFX::MENU_CLICK);
     }
-    if (Keys::isKeyPressed('.')) {
+    if (ButtonMapper::isKeyPressed('.')) {
         if (count && selected + 1 < count) {
             selected++;
             if (selected >= scroll + VISIBLE) scroll = (uint8_t)(selected - VISIBLE + 1);
@@ -952,18 +988,22 @@ void LootMenu::handleInput() {
         }
         SFX::play(SFX::MENU_CLICK);
     }
-    if (Keys::keysState().enter && count) detailView = true;
-    if (Keys::isKeyPressed('s') || Keys::isKeyPressed('S'))
+    if (ButtonMapper::keysState().enter) {
+        if (s_ignorePwrClickAfterChord) s_ignorePwrClickAfterChord = false;
+        else startSync(true);
+        return;
+    }
+    if (ButtonMapper::isKeyPressed('s') || ButtonMapper::isKeyPressed('S'))
         startSync(false);
-    if (Keys::isKeyPressed('u') || Keys::isKeyPressed('U'))
+    if (ButtonMapper::isKeyPressed('u') || ButtonMapper::isKeyPressed('U'))
         startSync(true);
-    if (Keys::isKeyPressed('q') || Keys::isKeyPressed('Q'))
+    if (ButtonMapper::isKeyPressed('q') || ButtonMapper::isKeyPressed('Q'))
         startPullResults();
-    if (Keys::isKeyPressed('d') || Keys::isKeyPressed('D'))
+    if (ButtonMapper::isKeyPressed('d') || ButtonMapper::isKeyPressed('D'))
         deleteSelected();
-    if (Keys::isKeyPressed('r') || Keys::isKeyPressed('R'))
+    if (ButtonMapper::isKeyPressed('r') || ButtonMapper::isKeyPressed('R'))
         reloadList();
-    if (Keys::isKeyPressed('t') || Keys::isKeyPressed('T')) runDiag();
+    if (ButtonMapper::isKeyPressed('t') || ButtonMapper::isKeyPressed('T')) runDiag();
     if (inspectKey) runInspector(inspectAll);
 }
 

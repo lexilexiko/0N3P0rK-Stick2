@@ -1,4 +1,4 @@
-﻿// EvilPig вЂ” network select + client estimate + softAP clone + deauth kicks
+// EvilPig вЂ” network select + client estimate + softAP clone + deauth kicks
 // Deauth uses WSLBypasser (same as OINK). Portal uses WebServer+DNSServer.
 // LAB / authorized networks only.
 
@@ -826,12 +826,12 @@ void EvilPigMode::stop() {
 
 void EvilPigMode::handleInputSelect() {
     static bool keyWas = false;
-    if (!Keys::isChanged() && !Keys::isPressed()) {
+    if (!ButtonMapper::isChanged() && !ButtonMapper::isPressed()) {
         keyWas = false;
         return;
     }
 
-    if (Keys::isKeyPressed(';')) {
+    if (ButtonMapper::isKeyPressed(';')) {
         if (!keyWas && listCount > 0) {
             keyWas = true;
             if (listIdx == 0) listIdx = listCount - 1;
@@ -840,7 +840,7 @@ void EvilPigMode::handleInputSelect() {
         }
         return;
     }
-    if (Keys::isKeyPressed('.')) {
+    if (ButtonMapper::isKeyPressed('.')) {
         if (!keyWas && listCount > 0) {
             keyWas = true;
             listIdx = (listIdx + 1) % listCount;
@@ -848,28 +848,28 @@ void EvilPigMode::handleInputSelect() {
         }
         return;
     }
-    if (Keys::isKeyPressed('r') || Keys::isKeyPressed('R')) {
+    if (ButtonMapper::isKeyPressed('r') || ButtonMapper::isKeyPressed('R')) {
         if (!keyWas) {
             keyWas = true;
             refreshNetworkList();
         }
         return;
     }
-    if (Keys::isKeyPressed('v') || Keys::isKeyPressed('V')) {
+    if (ButtonMapper::isKeyPressed('v') || ButtonMapper::isKeyPressed('V')) {
         if (!keyWas) {
             keyWas = true;
             openLoot();
         }
         return;
     }
-    if (keyEsc()) {
+    if (ButtonMapper::back()) {
         if (!keyWas) {
             keyWas = true;
             stop();
         }
         return;
     }
-    if (Keys::isKeyPressed(KEY_ENTER)) {
+    if (ButtonMapper::isKeyPressed(KEY_ENTER)) {
         if (!keyWas && listCount > 0) {
             keyWas = true;
             applySelection();
@@ -890,16 +890,16 @@ void EvilPigMode::handleInputSelect() {
         }
         return;
     }
-    if (!Keys::isPressed()) keyWas = false;
+    if (!ButtonMapper::isPressed()) keyWas = false;
 }
 
 void EvilPigMode::handleInputPortal() {
     static bool keyWas = false;
-    if (!Keys::isChanged() && !Keys::isPressed()) {
+    if (!ButtonMapper::isChanged() && !ButtonMapper::isPressed()) {
         keyWas = false;
         return;
     }
-    if (Keys::isKeyPressed('k') || Keys::isKeyPressed('K')) {
+    if (ButtonMapper::isKeyPressed('k') || ButtonMapper::isKeyPressed('K')) {
         if (!keyWas) {
             keyWas = true;
             if (!targetPmf) {
@@ -909,37 +909,37 @@ void EvilPigMode::handleInputPortal() {
         }
         return;
     }
-    if (Keys::isKeyPressed('v') || Keys::isKeyPressed('V')) {
+    if (ButtonMapper::isKeyPressed('v') || ButtonMapper::isKeyPressed('V')) {
         if (!keyWas) {
             keyWas = true;
             openLoot();
         }
         return;
     }
-    if (keyEsc()) {
+    if (ButtonMapper::back()) {
         if (!keyWas) {
             keyWas = true;
             stop();
         }
         return;
     }
-    if (!Keys::isPressed()) keyWas = false;
+    if (!ButtonMapper::isPressed()) keyWas = false;
 }
 
 void EvilPigMode::handleInputLoot() {
     static bool keyWas = false;
-    if (!Keys::isChanged() && !Keys::isPressed()) {
+    if (!ButtonMapper::isChanged() && !ButtonMapper::isPressed()) {
         keyWas = false;
         return;
     }
-    if (Keys::isKeyPressed(';')) {
+    if (ButtonMapper::isKeyPressed(';')) {
         if (!keyWas && lootScroll > 0) {
             keyWas = true;
             lootScroll--;
         }
         return;
     }
-    if (Keys::isKeyPressed('.')) {
+    if (ButtonMapper::isKeyPressed('.')) {
         if (!keyWas && catchCount > 0 && lootScroll + 4 < catchCount) {
             keyWas = true;
             lootScroll++;
@@ -947,17 +947,17 @@ void EvilPigMode::handleInputLoot() {
         return;
     }
     // ` / Enter / V = back to previous phase
-    if (keyEsc() ||
-        Keys::isKeyPressed(KEY_ENTER) ||
-        Keys::isKeyPressed('v') ||
-        Keys::isKeyPressed('V')) {
+    if (ButtonMapper::back() ||
+        ButtonMapper::isKeyPressed(KEY_ENTER) ||
+        ButtonMapper::isKeyPressed('v') ||
+        ButtonMapper::isKeyPressed('V')) {
         if (!keyWas) {
             keyWas = true;
             phase = phaseBeforeLoot;
         }
         return;
     }
-    if (!Keys::isPressed()) keyWas = false;
+    if (!ButtonMapper::isPressed()) keyWas = false;
 }
 
 void EvilPigMode::update() {
@@ -1017,12 +1017,12 @@ const char* EvilPigMode::getBottomHint() {
                      (unsigned long)deauthCount);
             return buf;
         }
-        return "K KICK  V LOOT  ESC EXIT";
+        return "A/B NAVIGATE  PWR SELECT  HOLD BACK";
     }
-    if (phase == Phase::LOOT) return "^/v  V/ENT BACK";
-    if (page == 0) return "^/v  ENT CLONE";
-    if (page == 1) return "R rescan  V loot";
-    return "ESC EXIT";
+    if (phase == Phase::LOOT) return "A/B BROWSE  PWR BACK  HOLD EXIT";
+    if (page == 0) return "A/B SELECT  PWR OPEN";
+    if (page == 1) return "PWR SELECT  HOLD PWR BACK";
+    return "HOLD PWR EXIT";
 }
 
 // Clip helper: write at most maxLen chars into out (null-terminated)
