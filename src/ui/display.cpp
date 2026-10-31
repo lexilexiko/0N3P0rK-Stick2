@@ -617,10 +617,8 @@ void Display::drawTopBar() {
         : fg;
 
     topBar.fillSprite(barBg);
-    if (farm) {
-        if (SceneLayers::weather) Weather::drawClouds(topBar, barFg, (int16_t)TOP_BAR_H);
-        if (SceneLayers::trees) Avatar::drawTreeBarOverflow(topBar);
-    }
+    // Clouds and trees used to be drawn a second time into this 16px strip.
+    // Almost every pixel was clipped away, and the Stick spent the frame on it.
 
     topBar.setTextColor(barFg);
     topBar.setTextSize(1);

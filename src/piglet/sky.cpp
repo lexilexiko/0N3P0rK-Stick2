@@ -275,12 +275,6 @@ void drawBackdrop(M5Canvas& canvas) {
     }
     s_skyTop = S0;
 
-    static const uint8_t bayer4[16] = {
-        0,  8,  2, 10,
-        12, 4, 14,  6,
-        3, 11,  1,  9,
-        15, 7, 13,  5
-    };
     uint16_t samples[32];
     for (int i = 0; i < 32; i++) {
         int u = i;
@@ -296,21 +290,27 @@ void drawBackdrop(M5Canvas& canvas) {
     }
 
     // Full sky to grass line вЂ” gradient meets turf cleanly
-    for (int y = 0; y < 103; y++) {
+    // Band the gradient. Dithering every 2px was about 12k line calls a frame.
+    for (int y = 0; y < 103; ) {
         int si = (y * 31) / 102;
         if (si > 30) si = 30;
         uint16_t cA = samples[si];
         uint16_t cB = samples[si + 1];
         int sub = ((y * 31) % 102) * 16 / 102;
-        if (cA == cB) {
-            canvas.drawFastHLine(0, y, 240, skyFlash(cA));
-            continue;
+        uint16_t c = skyFlash((cA == cB || sub < 8) ? cA : cB);
+        int y2 = y + 1;
+        while (y2 < 103) {
+            int si2 = (y2 * 31) / 102;
+            if (si2 > 30) si2 = 30;
+            uint16_t a2 = samples[si2];
+            uint16_t b2 = samples[si2 + 1];
+            int sub2 = ((y2 * 31) % 102) * 16 / 102;
+            uint16_t c2 = skyFlash((a2 == b2 || sub2 < 8) ? a2 : b2);
+            if (c2 != c) break;
+            y2++;
         }
-        for (int x = 0; x < 240; x += 2) {
-            uint8_t thr = bayer4[((y & 3) << 2) | (x & 3)];
-            uint16_t c = (sub > (int)thr) ? cB : cA;
-            canvas.drawFastHLine(x, y, 2, skyFlash(c));
-        }
+        canvas.fillRect(0, y, 240, y2 - y, c);
+        y = y2;
     }
 
     // CITY skyline: simple chunky pixel buildings behind the foreground.

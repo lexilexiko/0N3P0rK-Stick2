@@ -25,7 +25,6 @@
 namespace App {
 
 static AppMode s_mode = AppMode::FARM;
-static bool s_g0Was = false;
 static bool s_winHid = false;
 static bool s_minLatch = false;
 static bool s_capBarLatch = false;
@@ -55,8 +54,6 @@ void begin() {
     s_mode = AppMode::FARM;
     Menu::begin();
     TaskManager::begin();
-    // StickC Plus 2 has no GPIO-0 key; input is handled by Keys (BtnA/BtnB/PWR).
-    s_g0Was = false;
 }
 
 AppMode mode() { return s_mode; }
@@ -270,9 +267,8 @@ static void farmPoll() {
 }
 
 void loop() {
-    bool g0 = digitalRead(0) == LOW;
-    if (g0 && !s_g0Was) Display::toggleScreenPower();
-    s_g0Was = g0;
+    // GPIO0 is the StickC Plus2 mic clock. Reading it as a button floats
+    // and was turning the backlight off, which looks like a frozen scene.
     if (Display::isScreenForcedOff()) return;
 
     // Any key wakes the dimmed backlight (not only isChange, not only FARM).

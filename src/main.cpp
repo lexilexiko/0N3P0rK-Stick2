@@ -100,6 +100,11 @@ void setup() {
     // M5.begin() then scans every Grove display (external_display = 0xFFFF).
     cfg.fallback_board = m5::board_t::board_M5StickCPlus2;
     cfg.external_display_value = 0;
+    // Plus2 speaker is a passive piezo on GPIO2. The I2S buzzer path
+    // squeals and keeps a task awake. Tones go out through LEDC instead.
+    // GPIO0 is the mic clock, not a button.
+    cfg.internal_spk = false;
+    cfg.internal_mic = false;
     M5.begin(cfg);
     // Autodetect restores GPIO state. Hold must stay high or Plus2 cuts power.
     pinMode(4, OUTPUT);

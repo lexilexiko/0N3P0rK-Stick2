@@ -508,16 +508,51 @@ static uint8_t eventVolumeScale(Event e) {
     }
 }
 
+// StickC Plus2 passive piezo on GPIO2. LEDC square wave, not the I2S
+// delta-sigma path: that one squeals on this buzzer and burns a core.
+static constexpr uint8_t kBuzzCh = 3;
+static constexpr int kBuzzPin = 2;
+static constexpr uint8_t kBuzzBits = 8;
+static bool s_buzzReady = false;
+static uint8_t s_buzzDuty = 0;
+static uint32_t s_buzzUntil = 0;
+
+static void buzzStop() {
+    s_buzzUntil = 0;
+    if (s_buzzReady) ledcWrite(kBuzzCh, 0);
+}
+
+static void buzzEnsure() {
+    if (s_buzzReady) return;
+    ledcSetup(kBuzzCh, 1000, kBuzzBits);
+    ledcAttachPin(kBuzzPin, kBuzzCh);
+    ledcWrite(kBuzzCh, 0);
+    s_buzzReady = true;
+    pinMode(4, OUTPUT);
+    digitalWrite(4, HIGH);
+}
+
+static void buzzTone(uint16_t freq, uint16_t duration) {
+    buzzEnsure();
+    if (freq < 40 || s_buzzDuty == 0) {
+        buzzStop();
+        return;
+    }
+    ledcChangeFrequency(kBuzzCh, freq, kBuzzBits);
+    ledcWrite(kBuzzCh, s_buzzDuty);
+    s_buzzUntil = millis() + (duration ? duration : 30);
+}
+
 // ==[ VOLUME MAPPING ]==
 static void applyVolume() {
-    // Cardputer piezo is LOUD — keep the whole curve low.
-    // Level 1 = whisper (stealth), 3 = comfortable, 5 = noisy room.
-    static const uint8_t kVolMap[] = {0, 20, 45, 80, 140, 210};
+    // Duty out of 255. A piezo is loud at 50%, so the top of the curve stays low.
+    static const uint8_t kDuty[] = {0, 8, 14, 22, 32, 48};
     uint8_t lvl = Config::personality().soundLevel;
     if (lvl > 5) lvl = 5;
-    uint16_t vol = kVolMap[lvl];
-    vol = (vol * currentVolumeScale) / 100;
-    M5.Speaker.setVolume((uint8_t)vol);
+    uint16_t duty = kDuty[lvl];
+    duty = (uint16_t)((duty * currentVolumeScale) / 100);
+    if (duty > 64) duty = 64;
+    s_buzzDuty = (uint8_t)duty;
 }
 
 // ==[ STATE MACHINE ]==
@@ -562,6 +597,7 @@ void init() {
     queueHead = 0;
     queueTail = 0;
     s_muteMask = 0;
+    buzzEnsure();
     
     // Initialize queue
     for (int i = 0; i < QUEUE_SIZE; i++) {
@@ -598,7 +634,8 @@ void setUploadMuted(bool muted) {
         // The other mute reasons only stop()+block play(); this one also
         // drops the actual speaker volume to 0, which is what releases
         // the driver's own RAM — every KB matters during a TLS batch.
-        M5.Speaker.setVolume(0);
+        s_buzzDuty = 0;
+        buzzStop();
     } else if (m == 0) {
         // Only restore the curve if nothing else is still muting us.
         applyVolume();
@@ -626,8 +663,7 @@ void play(Event event) {
     bool isPriority = isPriorityEvent(event);
     if (isPriority && currentSequence != nullptr) {
         // Interrupt current sound for priority feedback
-        M5.Speaker.stop();
-        delayMicroseconds(150);  // settle audio driver before next tone
+        buzzStop();
         currentSequence = nullptr;
         currentStep = 0;
         // Clear queue on priority
@@ -659,9 +695,7 @@ void play(Event event) {
 }
 
 static void startSequence(const Note* seq) {
-    // Always stop residual speaker tone so notes never layer / feedback
-    M5.Speaker.stop();
-    delayMicroseconds(80);
+    buzzStop();
 
     currentSequence = seq;
     currentStep = 0;
@@ -673,11 +707,15 @@ static void startSequence(const Note* seq) {
 
     // Start first note
     if (seq[0].freq > 0 && seq[0].duration > 0) {
-        M5.Speaker.tone(seq[0].freq, seq[0].duration);
+        buzzTone(seq[0].freq, seq[0].duration);
     }
 }
 
 bool update() {
+    if (currentSequence == nullptr && s_buzzUntil &&
+        (int32_t)(millis() - s_buzzUntil) >= 0) {
+        buzzStop();
+    }
     // Skip if muted or sound disabled
     if (s_muteMask != 0 || Config::personality().soundLevel == 0) {
         // Clear any queued events
@@ -890,6 +928,7 @@ bool update() {
             stepStartTime = now;
             
             // If no pause, advance immediately
+            buzzStop();
             if (note.pause == 0) {
                 currentStep++;
                 inNote = true;
@@ -897,9 +936,7 @@ bool update() {
                 
                 const Note& next = currentSequence[currentStep];
                 if (next.duration > 0 && next.freq > 0) {
-                    M5.Speaker.stop();
-                    delayMicroseconds(40);
-                    M5.Speaker.tone(next.freq, next.duration);
+                    buzzTone(next.freq, next.duration);
                 }
             }
         }
@@ -913,9 +950,7 @@ bool update() {
             
             const Note& next = currentSequence[currentStep];
             if (next.duration > 0 && next.freq > 0) {
-                M5.Speaker.stop();
-                delayMicroseconds(40);
-                M5.Speaker.tone(next.freq, next.duration);
+                buzzTone(next.freq, next.duration);
             }
         }
     }
@@ -936,7 +971,7 @@ void stop() {
     taskENTER_CRITICAL(&queueMutex);
     queueHead = queueTail = 0;
     taskEXIT_CRITICAL(&queueMutex);
-    M5.Speaker.stop();
+    buzzStop();
 }
 
 void tone(uint16_t freq, uint16_t duration) {
@@ -945,7 +980,7 @@ void tone(uint16_t freq, uint16_t duration) {
     // Don't layer direct tones over an active sequence
     if (currentSequence != nullptr) return;
     applyVolume();
-    M5.Speaker.tone(freq, duration);
+    buzzTone(freq, duration);
 }
 
 }  // namespace SFX

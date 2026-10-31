@@ -19,6 +19,14 @@ static const uint16_t WPASEC_PORT = 443;
 static const char* WPASEC_UPLOAD_PATH = "/";
 static const char* WPASEC_POTFILE_PATH = "/?api&dl=1";
 static const size_t WPASEC_MAX_CACHE = 512;
+
+// vector growth calls abort() when the realloc fails. Stop before that.
+static bool cacheRoom(size_t size, size_t cap, size_t elem) {
+    if (size < cap) return true;
+    size_t slots = cap ? cap * 2 : 8;
+    size_t need = slots * elem + 128;
+    return heap_caps_get_largest_free_block(MALLOC_CAP_8BIT) > need + 2048;
+}
 static const char* WPA_PENDING = "/0N3P0rK/wpa-sec/_pending.txt";
 
 bool WPASec::cacheLoaded = false;
@@ -132,7 +140,10 @@ bool WPASec::loadUploadedList() {
         if (n == 0) continue;
         UploadedEntry e{};
         normalizeBSSID(line, e.bssid, sizeof(e.bssid));
-        if (e.bssid[0]) uploadedCache.push_back(e);
+        if (e.bssid[0]) {
+            if (!cacheRoom(uploadedCache.size(), uploadedCache.capacity(), sizeof(e))) break;
+            uploadedCache.push_back(e);
+        }
     }
     f.close();
     return true;
@@ -181,7 +192,10 @@ bool WPASec::loadCache() {
                 normalizeBSSID(bssidP, e.bssid, sizeof(e.bssid));
                 strncpy(e.ssid, ssid, sizeof(e.ssid) - 1);
                 strncpy(e.password, pass, sizeof(e.password) - 1);
-                if (e.password[0]) crackedCache.push_back(e);
+                if (e.password[0]) {
+                    if (!cacheRoom(crackedCache.size(), crackedCache.capacity(), sizeof(e))) break;
+                    crackedCache.push_back(e);
+                }
             }
             f.close();
         }
@@ -258,6 +272,7 @@ void WPASec::markAsUploaded(const char* bssid) {
     if (uploadedCache.size() >= WPASEC_MAX_CACHE) return;
     UploadedEntry e{};
     strncpy(e.bssid, key, sizeof(e.bssid) - 1);
+    if (!cacheRoom(uploadedCache.size(), uploadedCache.capacity(), sizeof(e))) return;
     uploadedCache.push_back(e);
 }
 

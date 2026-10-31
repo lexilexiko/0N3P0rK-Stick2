@@ -19,6 +19,14 @@ static const char* PWN_HOST = "pwncrack.org";
 static const char* PWN_UPLOAD_PATH = "/upload_handshake";
 static const char* PWN_POTFILE_PATH = "/download_potfile_script";
 static const size_t PWN_MAX_CACHE = 512;
+
+// vector growth calls abort() when the realloc fails. Stop before that.
+static bool cacheRoom(size_t size, size_t cap, size_t elem) {
+    if (size < cap) return true;
+    size_t slots = cap ? cap * 2 : 8;
+    size_t need = slots * elem + 128;
+    return heap_caps_get_largest_free_block(MALLOC_CAP_8BIT) > need + 2048;
+}
 static const char* PWN_PENDING = "/0N3P0rK/pwncrack/_pending.txt";
 
 bool Pwncrack::cacheLoaded = false;
@@ -123,7 +131,10 @@ bool Pwncrack::loadUploadedList() {
         if (n == 0) continue;
         UploadedEntry e{};
         normPwnId(line, e.id, sizeof(e.id));
-        if (e.id[0]) uploadedCache.push_back(e);
+        if (e.id[0]) {
+            if (!cacheRoom(uploadedCache.size(), uploadedCache.capacity(), sizeof(e))) break;
+            uploadedCache.push_back(e);
+        }
     }
     f.close();
     return true;
@@ -200,7 +211,10 @@ bool Pwncrack::loadCache() {
                         continue;
                     }
                 }
-                if (e.password[0]) crackedCache.push_back(e);
+                if (e.password[0]) {
+                    if (!cacheRoom(crackedCache.size(), crackedCache.capacity(), sizeof(e))) break;
+                    crackedCache.push_back(e);
+                }
             }
             f.close();
         }
@@ -279,6 +293,7 @@ void Pwncrack::markAsUploaded(const char* filename) {
     UploadedEntry e{};
     normPwnId(filename, e.id, sizeof(e.id));
     if (!e.id[0]) return;
+    if (!cacheRoom(uploadedCache.size(), uploadedCache.capacity(), sizeof(e))) return;
     uploadedCache.push_back(e);
 }
 

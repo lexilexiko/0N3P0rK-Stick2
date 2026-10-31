@@ -21,6 +21,14 @@ static const char*    OHC_UPLOAD_PATH = "/";
 // 48-byte ids: capture file names ("AA-BB-CC-DD-EE-FF_SSID.pcap") plus BSSID hex.
 static const uint8_t  OHC_ID_MAX = 48;
 static const size_t   OHC_MAX_CACHE = 256;
+
+// vector growth calls abort() when the realloc fails. Stop before that.
+static bool cacheRoom(size_t size, size_t cap, size_t elem) {
+    if (size < cap) return true;
+    size_t slots = cap ? cap * 2 : 8;
+    size_t need = slots * elem + 128;
+    return heap_caps_get_largest_free_block(MALLOC_CAP_8BIT) > need + 2048;
+}
 static const char*    OHC_PENDING = "/0N3P0rK/ohc/_pending.txt";
 // Per-run report. The device has no console in the field, so every candidate
 // and its outcome is written here and can be opened from FILEMGR or pulled over
@@ -223,6 +231,7 @@ static void pushUploaded(const char* id) {
     if (s_uploaded.size() >= OHC_MAX_CACHE) return;
     UploadedEntry e{};
     strncpy(e.id, id, sizeof(e.id) - 1);
+    if (!cacheRoom(s_uploaded.size(), s_uploaded.capacity(), sizeof(e))) return;
     s_uploaded.push_back(e);
 }
 
