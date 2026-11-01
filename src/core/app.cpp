@@ -204,11 +204,11 @@ static void farmPoll() {
     if (Credits::isPlaying()) return;  // unskippable credits
     if (CardsTable::isActive()) return;  // duel owns keys + draw
     animTestPoll();
-    // Hold walks. A short tap jumps, a short B tap sits. PWR is the menu.
+    // Hold A/B to walk, tap A to jump, tap B to sit, and tap PWR to attack.
     bool left  = ButtonMapper::holdB();
     bool right = ButtonMapper::holdA();
     bool jumpKey = ButtonMapper::tapA();
-    bool attackKey = false;
+    bool attackKey = ButtonMapper::ok();
     bool sitKey = ButtonMapper::tapB();
 
     static bool idleJumpWas = false;
@@ -278,8 +278,8 @@ void loop() {
         Screenshot::poll();
 
     if (s_mode == AppMode::FARM || windowHidden()) farmPoll();
-    // PWR click is reported on release, when no button is held anymore.
-    if (s_mode == AppMode::FARM && ButtonMapper::ok()) {
+    // A short PWR click attacks; a long PWR press opens the menu.
+    if (s_mode == AppMode::FARM && ButtonMapper::back()) {
         setMode(AppMode::MENU);
         return;
     }

@@ -168,6 +168,8 @@ Z-order (back → front), modular files under `src/piglet/`:
 ### Controls (farm, typical)
 
 - `,` / `/`: walk; `;`: jump; `SPACE`: attack-hop; `.`: sit / dig
+- On M5StickC Plus 2: hold `A` / `B` to walk, tap `A` to jump, tap `B` to
+  sit/dig, tap `PWR` to attack, and hold `PWR` to open the menu.
 - Tap `.` once to sit. After the sit animation finishes, release and hold `.` again to dig.
   Digging rocks the head and tail, throws season-themed ground debris, and plays
   a scrape. Release to stop digging; the pig stays seated. The sit key is ignored

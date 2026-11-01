@@ -941,7 +941,7 @@ void Display::drawBottomBar() {
                 if (CardsTable::isActive())
                     CardsTable::getStatusLine(left, sizeof(left));
                 else
-                    strncpy(left, "A/B HOLD WALK  TAP PWR MENU", sizeof(left) - 1);
+                    strncpy(left, "A/B WALK  PWR ATTACK  HOLD MENU", sizeof(left) - 1);
                 break;
             case AppMode::LOOT:
                 strncpy(left, LootMenu::getBottomHint(), sizeof(left) - 1);
@@ -1158,4 +1158,3 @@ void Display::update() {
     pushAll();
     SceneLayers::endFrame();
 }
-
