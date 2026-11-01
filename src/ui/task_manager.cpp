@@ -22,7 +22,7 @@ namespace TaskManager {
 namespace {
 
 enum Row : uint8_t {
-    RADIO, WIFI, EVILPIG, PIGPASS, SPECTRUM, USBSD, FILEMGR, XFER,
+    RADIO, WIFI, EVILPIG, PIGPASS, SPECTRUM, FILEMGR, XFER,
     BADUSB, WPA_SYNC, PWN_SYNC, LOOT, STOP_ALL, ROW_COUNT
 };
 
@@ -42,7 +42,7 @@ bool s_sdAvailable = false;
 const char* rowName(Row row) {
     static const char* const names[] = {
         "RADIO", "WIFI", "EVILPIG", "PIGPASS", "SPECTRUM",
-        "USB SD", "FILES", "XFER", "BADUSB", "WPA-SEC", "PWNCRACK",
+        "FILES", "XFER", "BADUSB", "WPA-SEC", "PWNCRACK",
         "LOOT", "STOP ALL"
     };
     return names[row];
@@ -309,4 +309,3 @@ void draw(M5Canvas& canvas) {
 }
 
 }  // namespace TaskManager
-

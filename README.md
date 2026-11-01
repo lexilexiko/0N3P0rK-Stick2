@@ -640,7 +640,7 @@ editing.
 | **Spectrum** | Channel / air view; scene can suspend to save CPU |
 | **PigPass** | Offline PSK try from captures + wordlist |
 | **EvilPig** | Portal-style lab tool |
-| **BLE / IR / USB SD** | Extra toys as implemented |
+| **BLE / IR** | Extra toys as implemented |
 | **LOOT** | Browse captures and synchronize with supported services |
 
 ---

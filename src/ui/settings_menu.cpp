@@ -217,7 +217,6 @@ static const Item KEYS[] = {
     {"PIG",      Kind::BIND, 10, 0, 0, 0},
     {"XFER",     Kind::BIND, 11, 0, 0, 0},
     {"BADUSB",   Kind::BIND, 12, 0, 0, 0},
-    {"USB SD",   Kind::BIND, 13, 0, 0, 0},
     {"WIFI",     Kind::BIND, 14, 0, 0, 0},
     {"STOP",     Kind::BIND, 15, 0, 0, 0},
     {"TASKS",    Kind::BIND, 16, 0, 0, 0},
@@ -369,16 +368,13 @@ static const char* const H_KEYS[] = {
     "LIGHT RADIO SNIFFER.",
     "LOCAL PASSWORD AUDIT.",
     "EVILPIG LAB MODE.",
-    "BLE LAB MODE.",
-    "IR TRANSMITTER.",
     "SPECTRUM SCANNER.",
     "CAPTURE FILES AND SYNC.",
     "RADIO SETTINGS.",
-    "SD / LITTLEFS FILE MANAGER.",
+    "FILE MANAGER.",
     "PIG SETTINGS.",
     "LOCAL XFER SERVER.",
     "BADUSB / BADBLE TOOLS.",
-    "USB SD CARD MODE.",
     "HOME WIFI SETTINGS.",
     "STOP ACTIVE TASKS.",
     "OPEN TASK MANAGER.",
@@ -2000,5 +1996,4 @@ void draw(M5Canvas& canvas) {
 }
 
 }  // namespace SettingsMenu
-
 

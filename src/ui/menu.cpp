@@ -89,7 +89,7 @@ static const char* const H_CONN[] = {
     "HOME WIFI FOR S-SYNC."
 };
 static const char* const H_CONNECT_GRP[] = {
-    "WIFI  BADUSB  USB-SD  XFER.",
+    "WIFI  BADUSB  XFER.",
     "LINKS OUTSIDE THE BARN."
 };
 static const char* const H_BADUSB[] = {
@@ -99,10 +99,6 @@ static const char* const H_BADUSB[] = {
 static const char* const H_XFER[] = {
     "WIFI AP + DOS COMMANDER.",
     "JOIN AP  OPEN 192.168.4.1"
-};
-static const char* const H_USB[] = {
-    "SD AS A DISK ON THE PC.",
-    "PLUG USB. EJECT THEN `."
 };
 static const char* const H_FILEMGR[] = {
     "SD + INTERNAL MEM. TXT VIEW/EDIT.",
@@ -187,7 +183,6 @@ static const Item G_SET[] = {
 };
 static const Item G_CONNECT[] = {
     {"))", "WIFI",    6,  H_CONN,   2},
-    {"U:", "USB SD",  17, H_USB,    2},
     {"F:", "XFER",    22, H_XFER,   2}
 };
 
@@ -219,7 +214,7 @@ static const Item* groupItems(GroupId g) {
 static uint8_t groupSize(GroupId g) {
     if (g == GroupId::ATTACK) return 6;
     if (g == GroupId::SET) return 7;
-    if (g == GroupId::CONNECT) return 3;
+    if (g == GroupId::CONNECT) return 2;
     return 0;
 }
 
@@ -295,10 +290,6 @@ static void doAction(uint8_t id) {
         case 16:
             if (Cap::isRunning()) Cap::stop();
             App::setMode(AppMode::SPECTRUM);
-            break;
-        case 17:
-            if (Cap::isRunning()) Cap::stop();
-            App::setMode(AppMode::USBSD);
             break;
         case 22:
             if (Cap::isRunning()) Cap::stop();
@@ -425,9 +416,10 @@ void handleKey(char c, bool enter, bool del, bool fn) {
 }
 
 bool tryHotkey() {
+    // Keep the removed action's slot reserved so saved key indexes stay stable.
     static const uint8_t ACT[HOTKEY_COUNT] = {
         2, 1, 10, 9, 13, 15, 16, 4, 11, 20,
-        7, 22, 21, 17, 6, 3, 23, 24
+        7, 22, 21, 0, 6, 3, 23, 24
     };
     const HotkeyConfig& hk = Config::hotkeys();
     for (uint8_t i = 0; i < HOTKEY_COUNT; i++) {
@@ -609,4 +601,3 @@ void draw(M5Canvas& canvas) {
 }
 
 }  // namespace Menu
-

@@ -38,7 +38,7 @@ static uint8_t s_capBarMode = 0;
 bool overlayMode() {
     return s_mode == AppMode::LOOT || s_mode == AppMode::EVILPIG ||
            s_mode == AppMode::PIGPASS || s_mode == AppMode::SPECTRUM ||
-           s_mode == AppMode::USBSD || s_mode == AppMode::FILEMGR || s_mode == AppMode::XFER ||
+           s_mode == AppMode::FILEMGR || s_mode == AppMode::XFER ||
            s_mode == AppMode::TASKS ||
            s_mode == AppMode::PIG ||
            s_mode == AppMode::TUNE || s_mode == AppMode::WIFI;
@@ -70,7 +70,6 @@ const char* modeName() {
         case AppMode::EVILPIG:  return "EVILPIG";
         case AppMode::PIGPASS:  return "PIGPASS";
         case AppMode::SPECTRUM: return "SPEC";
-        case AppMode::USBSD:    return "USB";
         case AppMode::FILEMGR:  return "FILES";
         case AppMode::XFER:     return "XFER";
         case AppMode::TASKS:    return "TASKS";
@@ -353,4 +352,3 @@ void loop() {
 }
 
 }
-

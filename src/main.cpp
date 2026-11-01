@@ -171,8 +171,6 @@ void setup() {
 }
 
 static unsigned long s_lastHeapLog = 0;
-static unsigned long s_ledTick = 0;
-static bool s_ledOn = false;
 
 // StatusLed calls this lightweight bridge to avoid coupling its driver to the farm scene.
 bool statusLedWolfIsVisible() {
@@ -180,13 +178,6 @@ bool statusLedWolfIsVisible() {
 }
 
 void loop() {
-    // Heartbeat: LED keeps ticking only if loop() is actually running.
-    if (millis() - s_ledTick > 1000) {
-        s_ledTick = millis();
-        s_ledOn = !s_ledOn;
-        bootLed(s_ledOn);
-    }
-
     M5.update();
     ButtonMapper::update();
     App::loop();
@@ -208,4 +199,3 @@ void loop() {
     delay(5);
     yield();
 }
-

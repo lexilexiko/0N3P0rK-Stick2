@@ -13,7 +13,6 @@ enum class AppMode : uint8_t {
     EVILPIG,
     PIGPASS,
     SPECTRUM,
-    USBSD,
     FILEMGR,
     XFER,
     TASKS
