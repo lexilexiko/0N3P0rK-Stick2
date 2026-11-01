@@ -101,16 +101,12 @@ static const char* const H_XFER[] = {
     "JOIN AP  OPEN 192.168.4.1"
 };
 static const char* const H_FILEMGR[] = {
-    "SD + INTERNAL MEM. TXT VIEW/EDIT.",
-    "A/B SELECT. PWR OPEN. HOLD BACK."
+    "A/B SELECT. PWR OPEN / VIEW.",
+    "HOLD PWR FOR FILE ACTIONS."
 };
 static const char* const H_KEYS[] = {
     "PHYSICAL BUTTON MAP PREVIEW.",
     "SELECT A MODE TO VIEW CONTROLS."
-};
-static const char* const H_SHOT[] = {
-    "SAVE A SCREENSHOT TO SD.",
-    "CAPTURE THE CURRENT DISPLAY."
 };
 static const char* const H_SPEC[] = {
     "2.4 SWEEP. LOBES AND FALL.",
@@ -178,8 +174,7 @@ static const Item G_SET[] = {
     {"))", "RADIO",   11, H_RADIO,  2},
     {"BT", "BLE",     12, H_BLESET, 2},
     {"**", "BUTTONS", 18, H_KEYS,   2},
-    {"[:", "FILES",   20, H_FILEMGR,2},
-    {"[S", "SCREENSHOT", 25, H_SHOT, 2}
+    {"[:", "FILES",   20, H_FILEMGR,2}
 };
 static const Item G_CONNECT[] = {
     {"))", "WIFI",    6,  H_CONN,   2},
@@ -213,7 +208,7 @@ static const Item* groupItems(GroupId g) {
 
 static uint8_t groupSize(GroupId g) {
     if (g == GroupId::ATTACK) return 6;
-    if (g == GroupId::SET) return 7;
+    if (g == GroupId::SET) return 6;
     if (g == GroupId::CONNECT) return 2;
     return 0;
 }

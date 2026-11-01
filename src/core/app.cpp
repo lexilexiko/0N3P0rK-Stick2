@@ -274,7 +274,7 @@ void loop() {
     if (ButtonMapper::isPressed() || ButtonMapper::isChanged())
         Display::resetDimTimer();
 
-    if (!SettingsMenu::isTyping() && !FileMgrMode::isTyping())
+    if (!SettingsMenu::isTyping())
         Screenshot::poll();
 
     if (s_mode == AppMode::FARM || windowHidden()) farmPoll();
@@ -286,7 +286,7 @@ void loop() {
 
     // Backspace = minimize overlay, except in file manager where it navigates back.
     if (overlayMode() && s_mode != AppMode::FILEMGR &&
-        !SettingsMenu::isTyping() && !FileMgrMode::isTyping()) {
+        !SettingsMenu::isTyping()) {
         if (ButtonMapper::keyNewPress(s_minLatch)) {
             if (false) {
                 s_winHid = !s_winHid;

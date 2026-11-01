@@ -13,14 +13,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-#ifndef KEY_ENTER
-#define KEY_ENTER 13
-#endif
-#ifndef KEY_BACKSPACE
-#define KEY_BACKSPACE 8
-#endif
-
-
 namespace {
 char* s_runtimeStorage = nullptr;
 }
@@ -36,14 +28,14 @@ uint16_t FileMgrMode::sel = 0;
 uint16_t FileMgrMode::scroll = 0;
 bool FileMgrMode::keyLatch = false;
 char* FileMgrMode::statusMsg = nullptr;
+FileMgrMode::Action FileMgrMode::actionItems[8] = {};
+uint8_t FileMgrMode::actionCount = 0;
+uint8_t FileMgrMode::actionSel = 0;
+uint8_t FileMgrMode::actionScroll = 0;
 char* FileMgrMode::buf = nullptr;
 uint16_t FileMgrMode::bufLen = 0;
-uint16_t FileMgrMode::cursor = 0;
-bool FileMgrMode::dirty = false;
 char* FileMgrMode::openName = nullptr;
 uint16_t FileMgrMode::viewTopLine = 0;
-char* FileMgrMode::nameBuf = nullptr;
-FileMgrMode::NameAction FileMgrMode::nameAction = FileMgrMode::NameAction::NEW_FILE;
 char* FileMgrMode::clipboardPath = nullptr;
 FileMgrMode::ClipboardAction FileMgrMode::clipboardAction =
     FileMgrMode::ClipboardAction::EMPTY;
@@ -76,16 +68,6 @@ static const char* baseName(const char* path) {
     return slash ? slash + 1 : (path ? path : "");
 }
 
-static bool validName(const char* name) {
-    if (!name || !name[0] || !strcmp(name, ".") || !strcmp(name, "..")) return false;
-    for (const char* p = name; *p; ++p) {
-        if ((uint8_t)*p < 32 || *p == '/' || *p == '\\' || *p == ':' ||
-            *p == '*' || *p == '?' || *p == '"' || *p == '<' || *p == '>' ||
-            *p == '|') return false;
-    }
-    return true;
-}
-
 static void formatSize(char* out, size_t n, uint32_t bytes) {
     if (bytes < 1024) snprintf(out, n, "%lu B", (unsigned long)bytes);
     else if (bytes < 1024UL * 1024UL)
@@ -105,8 +87,7 @@ static bool hasExtension(const char* name, const char* ext) {
 
 bool FileMgrMode::allocateRuntimeBuffers() {
     if (s_runtimeStorage) return true;
-    constexpr size_t storageSize = (size_t)PATH_BUF * 2 + STATUS_BUF +
-                                   (size_t)NAME_BUF * 2;
+    constexpr size_t storageSize = (size_t)PATH_BUF * 2 + STATUS_BUF + NAME_BUF;
     s_runtimeStorage = static_cast<char*>(calloc(storageSize, 1));
     if (!s_runtimeStorage) return false;
 
@@ -117,8 +98,6 @@ bool FileMgrMode::allocateRuntimeBuffers() {
     next += STATUS_BUF;
     openName = next;
     next += NAME_BUF;
-    nameBuf = next;
-    next += NAME_BUF;
     clipboardPath = next;
     buf = nullptr;
     strcpy(curPath, "/");
@@ -126,29 +105,28 @@ bool FileMgrMode::allocateRuntimeBuffers() {
 }
 
 void FileMgrMode::freeRuntimeBuffers() {
-    freeTextBuffer();
+    freePreviewBuffer();
     free(s_runtimeStorage);
     s_runtimeStorage = nullptr;
     free(entries);
-    curPath = statusMsg = buf = openName = nameBuf = clipboardPath = nullptr;
+    curPath = statusMsg = buf = openName = clipboardPath = nullptr;
     entries = nullptr;
     entryCount = entryCapacity = 0;
     listTruncated = false;
 }
 
-bool FileMgrMode::allocateTextBuffer() {
+bool FileMgrMode::allocatePreviewBuffer() {
     if (buf) return true;
-    buf = static_cast<char*>(malloc(EDIT_CAP));
+    buf = static_cast<char*>(malloc(PREVIEW_CAP));
     if (!buf) return false;
     buf[0] = '\0';
     return true;
 }
 
-void FileMgrMode::freeTextBuffer() {
+void FileMgrMode::freePreviewBuffer() {
     free(buf);
     buf = nullptr;
-    bufLen = cursor = viewTopLine = 0;
-    dirty = false;
+    bufLen = viewTopLine = 0;
 }
 
 bool FileMgrMode::reserveEntries(uint16_t required) {
@@ -265,15 +243,15 @@ bool FileMgrMode::imageType(const char* name) {
 }
 
 bool FileMgrMode::loadFile(const char* path) {
-    if (!allocateTextBuffer()) return false;
+    if (!allocatePreviewBuffer()) return false;
     File file = LittleFS.open(path, FILE_READ);
     if (!file || file.isDirectory()) {
         if (file) file.close();
-        freeTextBuffer();
+        freePreviewBuffer();
         return false;
     }
     size_t size = file.size();
-    if (size > EDIT_CAP - 1) size = EDIT_CAP - 1;
+    if (size > PREVIEW_CAP - 1) size = PREVIEW_CAP - 1;
     bufLen = (uint16_t)file.read((uint8_t*)buf, size);
     file.close();
     for (uint16_t i = 0; i < bufLen; ++i) {
@@ -281,45 +259,7 @@ bool FileMgrMode::loadFile(const char* path) {
         if (ch && ch < 32 && ch != '\n' && ch != '\r' && ch != '\t') buf[i] = '.';
     }
     buf[bufLen] = '\0';
-    cursor = viewTopLine = 0;
-    dirty = false;
-    return true;
-}
-
-bool FileMgrMode::saveFile() {
-    char path[PATH_BUF], temp[PATH_BUF], backup[PATH_BUF];
-    buildFullPath(path, sizeof(path), openName);
-    if (snprintf(temp, sizeof(temp), "%s.fm_tmp", path) >= (int)sizeof(temp) ||
-        snprintf(backup, sizeof(backup), "%s.fm_bak", path) >= (int)sizeof(backup)) {
-        strncpy(statusMsg, "PATH TOO LONG", STATUS_BUF - 1);
-        return false;
-    }
-    if (LittleFS.exists(temp) && !LittleFS.remove(temp)) return false;
-    File file = LittleFS.open(temp, FILE_WRITE);
-    if (!file) return false;
-    size_t written = file.write((const uint8_t*)buf, bufLen);
-    file.flush();
-    file.close();
-    if (written != bufLen) {
-        LittleFS.remove(temp);
-        return false;
-    }
-
-    bool hadOriginal = LittleFS.exists(path);
-    if (hadOriginal) {
-        if (LittleFS.exists(backup)) LittleFS.remove(backup);
-        if (!LittleFS.rename(path, backup)) {
-            LittleFS.remove(temp);
-            return false;
-        }
-    }
-    if (!LittleFS.rename(temp, path)) {
-        if (hadOriginal) LittleFS.rename(backup, path);
-        LittleFS.remove(temp);
-        return false;
-    }
-    if (hadOriginal) LittleFS.remove(backup);
-    dirty = false;
+    viewTopLine = 0;
     return true;
 }
 
@@ -342,7 +282,7 @@ bool FileMgrMode::openSelected() {
     }
     char path[PATH_BUF];
     buildFullPath(path, sizeof(path), entry.name);
-    if (!allocateTextBuffer()) {
+    if (!allocatePreviewBuffer()) {
         Display::showToast("LOW MEM - TEXT", 1200);
         return false;
     }
@@ -351,78 +291,6 @@ bool FileMgrMode::openSelected() {
         return false;
     }
     phase = Phase::VIEW;
-    return true;
-}
-
-void FileMgrMode::beginNameInput(NameAction action) {
-    nameAction = action;
-    nameBuf[0] = '\0';
-    if (action == NameAction::RENAME && sel < entryCount)
-        strncpy(nameBuf, entries[sel].name, NAME_BUF - 1);
-    nameBuf[NAME_BUF - 1] = '\0';
-    phase = Phase::NAME_INPUT;
-}
-
-bool FileMgrMode::commitNameInput() {
-    if (!validName(nameBuf)) {
-        Display::showToast("INVALID NAME", 900);
-        return false;
-    }
-    if (nameAction == NameAction::NEW_FILE && !allocateTextBuffer()) {
-        Display::showToast("LOW MEM - TEXT", 1200);
-        return false;
-    }
-    if (nameAction == NameAction::NEW_FILE && !strchr(nameBuf, '.')) {
-        if (strlen(nameBuf) + 4 >= NAME_BUF) {
-            Display::showToast("NAME TOO LONG", 900);
-            return false;
-        }
-        strcat(nameBuf, ".txt");
-    }
-    char target[PATH_BUF];
-    buildFullPath(target, sizeof(target), nameBuf);
-    if (nameAction == NameAction::RENAME && sel < entryCount) {
-        char source[PATH_BUF];
-        buildFullPath(source, sizeof(source), entries[sel].name);
-        if (strcasecmp(entries[sel].name, nameBuf) == 0) {
-            phase = Phase::BROWSE;
-            return true;
-        }
-    }
-    if (LittleFS.exists(target)) {
-        phase = Phase::CONFIRM_OVERWRITE;
-        strncpy(statusMsg, "REPLACE EXISTING?", STATUS_BUF - 1);
-        return false;
-    }
-
-    bool ok = false;
-    if (nameAction == NameAction::NEW_DIR) {
-        ok = LittleFS.mkdir(target);
-    } else if (nameAction == NameAction::NEW_FILE) {
-        File file = LittleFS.open(target, FILE_WRITE);
-        ok = (bool)file;
-        if (file) file.close();
-    } else if (sel < entryCount) {
-        char source[PATH_BUF];
-        buildFullPath(source, sizeof(source), entries[sel].name);
-        ok = LittleFS.rename(source, target);
-    }
-    if (!ok) {
-        Display::showToast("OPERATION FAILED", 1000);
-        return false;
-    }
-    if (nameAction == NameAction::NEW_FILE) {
-        strncpy(openName, nameBuf, NAME_BUF - 1);
-        openName[NAME_BUF - 1] = '\0';
-        bufLen = cursor = 0;
-        buf[0] = '\0';
-        dirty = false;
-        phase = Phase::EDIT;
-    } else {
-        phase = Phase::BROWSE;
-    }
-    refreshList();
-    Display::showToast("DONE", 700);
     return true;
 }
 
@@ -582,22 +450,10 @@ void FileMgrMode::stop() {
 
 void FileMgrMode::back() {
     switch (phase) {
-        case Phase::NAME_INPUT:
+        case Phase::ACTIONS:
         case Phase::CONFIRM_DEL:
         case Phase::CONFIRM_OVERWRITE:
             phase = Phase::BROWSE;
-            return;
-        case Phase::EDIT:
-            if (dirty) {
-                if (!saveFile()) {
-                    Display::showToast("SAVE FAILED", 1000);
-                    return;
-                }
-                Display::showToast("SAVED", 700);
-            }
-            phase = Phase::BROWSE;
-            freeTextBuffer();
-            refreshList();
             return;
         case Phase::IMAGE:
         case Phase::INFO:
@@ -606,7 +462,7 @@ void FileMgrMode::back() {
             return;
         case Phase::VIEW:
             phase = Phase::BROWSE;
-            freeTextBuffer();
+            freePreviewBuffer();
             refreshList();
             return;
         case Phase::BROWSE:
@@ -616,181 +472,125 @@ void FileMgrMode::back() {
     }
 }
 
-uint16_t FileMgrMode::cursorLine() {
-    uint16_t line = 0;
-    for (uint16_t i = 0; i < cursor && i < bufLen; ++i)
-        if (buf[i] == '\n') ++line;
-    return line;
+void FileMgrMode::buildActionList() {
+    actionCount = 0;
+    if (sel < entryCount) {
+        actionItems[actionCount++] = Action::OPEN;
+        actionItems[actionCount++] = Action::COPY;
+        actionItems[actionCount++] = Action::MOVE;
+        actionItems[actionCount++] = Action::DELETE;
+    }
+    if (clipboardAction != ClipboardAction::EMPTY)
+        actionItems[actionCount++] = Action::PASTE;
+    actionItems[actionCount++] = Action::REFRESH;
+    if (strcmp(curPath, "/") != 0)
+        actionItems[actionCount++] = Action::UP;
+    actionItems[actionCount++] = Action::EXIT;
+    actionSel = 0;
+    actionScroll = 0;
+    phase = Phase::ACTIONS;
+}
+
+void FileMgrMode::executeAction(Action action) {
+    if (action == Action::OPEN) {
+        phase = Phase::BROWSE;
+        openSelected();
+    } else if (action == Action::COPY || action == Action::MOVE) {
+        if (sel >= entryCount) return;
+        buildFullPath(clipboardPath, PATH_BUF, entries[sel].name);
+        clipboardAction = action == Action::COPY
+            ? ClipboardAction::COPY : ClipboardAction::MOVE;
+        phase = Phase::BROWSE;
+        Display::showToast(action == Action::COPY ? "COPIED TO CLIPBOARD" : "READY TO MOVE", 900);
+    } else if (action == Action::PASTE) {
+        phase = Phase::BROWSE;
+        pasteClipboard();
+    } else if (action == Action::DELETE) {
+        if (sel < entryCount) phase = Phase::CONFIRM_DEL;
+    } else if (action == Action::REFRESH) {
+        phase = Phase::BROWSE;
+        refreshList();
+    } else if (action == Action::UP) {
+        phase = Phase::BROWSE;
+        goUp();
+    } else if (action == Action::EXIT) {
+        stop();
+    }
 }
 
 void FileMgrMode::handleBrowseInput() {
-
-    if (ButtonMapper::back() || false) {
-        back();
+    if (ButtonMapper::back()) {
+        buildActionList();
         return;
     }
-    if (ButtonMapper::isKeyPressed(';')) {
+    if (ButtonMapper::prev()) {
         if (sel > 0) --sel;
         if (sel < scroll) scroll = sel;
         return;
     }
-    if (ButtonMapper::isKeyPressed('.')) {
+    if (ButtonMapper::next()) {
         if (entryCount && sel + 1 < entryCount) ++sel;
         if (sel >= scroll + VIS_ROWS) scroll = (uint16_t)(sel - VIS_ROWS + 1);
         return;
     }
-    if (ButtonMapper::isKeyPressed(',') || ButtonMapper::isKeyPressed('/')) {
-        if (ButtonMapper::isKeyPressed(',')) {
-            back();
-            return;
-        }
-        if (entryCount) openSelected();
-        return;
-    }
-    if (ButtonMapper::keysState().enter) {
-        if (entryCount) openSelected();
-        return;
-    }
-    if (ButtonMapper::isKeyPressed('n') || ButtonMapper::isKeyPressed('N')) {
-        beginNameInput(NameAction::NEW_FILE);
-        return;
-    }
-    if (ButtonMapper::isKeyPressed('m') || ButtonMapper::isKeyPressed('M')) {
-        beginNameInput(NameAction::NEW_DIR);
-        return;
-    }
-    if ((ButtonMapper::isKeyPressed('r') || ButtonMapper::isKeyPressed('R')) && entryCount) {
-        beginNameInput(NameAction::RENAME);
-        return;
-    }
-    if ((ButtonMapper::isKeyPressed('c') || ButtonMapper::isKeyPressed('C')) && entryCount) {
-        buildFullPath(clipboardPath, PATH_BUF, entries[sel].name);
-        clipboardAction = ClipboardAction::COPY;
-        Display::showToast("COPIED TO CLIPBOARD", 800);
-        return;
-    }
-    if ((ButtonMapper::isKeyPressed('v') || ButtonMapper::isKeyPressed('V')) && entryCount) {
-        buildFullPath(clipboardPath, PATH_BUF, entries[sel].name);
-        clipboardAction = ClipboardAction::MOVE;
-        Display::showToast("READY TO MOVE  P", 900);
-        return;
-    }
-    if (ButtonMapper::isKeyPressed('p') || ButtonMapper::isKeyPressed('P')) {
-        pasteClipboard();
-        return;
-    }
-    if ((ButtonMapper::isKeyPressed('x') || ButtonMapper::isKeyPressed('X')) && entryCount) {
-        phase = Phase::CONFIRM_DEL;
-        return;
-    }
-    if (ButtonMapper::isKeyPressed('t') || ButtonMapper::isKeyPressed('T')) {
-        refreshList();
-        return;
-    }
+    if (ButtonMapper::ok()) openSelected();
 }
 
-void FileMgrMode::handleViewInput() {
-
-    if (ButtonMapper::back() || false) {
-        back();
-        return;
-    }
-    if (ButtonMapper::isKeyPressed(';')) {
-        if (viewTopLine) --viewTopLine;
-    } else if (ButtonMapper::isKeyPressed('.')) {
-        ++viewTopLine;
-    } else if (ButtonMapper::isKeyPressed('e') || ButtonMapper::isKeyPressed('E')) {
-        cursor = bufLen;
-        phase = Phase::EDIT;
-    }
-}
-
-void FileMgrMode::handleEditInput() {
-
-    auto keys = ButtonMapper::keysState();
+void FileMgrMode::handleActionsInput() {
     if (ButtonMapper::back()) {
         back();
         return;
     }
-    if (ButtonMapper::isKeyPressed(KEY_BACKSPACE)) {
-        if (cursor) {
-            memmove(buf + cursor - 1, buf + cursor, bufLen - cursor);
-            --cursor;
-            --bufLen;
-            buf[bufLen] = '\0';
-            dirty = true;
+    if (ButtonMapper::prev()) {
+        if (actionCount) {
+            actionSel = actionSel == 0 ? (uint8_t)(actionCount - 1)
+                                       : (uint8_t)(actionSel - 1);
+            if (actionSel < actionScroll) actionScroll = actionSel;
+            else if (actionSel >= actionScroll + ACTION_ROWS)
+                actionScroll = (uint8_t)(actionSel - ACTION_ROWS + 1);
         }
+    } else if (ButtonMapper::next()) {
+        if (actionCount) {
+            actionSel = (uint8_t)((actionSel + 1) % actionCount);
+            if (actionSel >= actionScroll + ACTION_ROWS)
+                actionScroll = (uint8_t)(actionSel - ACTION_ROWS + 1);
+            else if (actionSel < actionScroll)
+                actionScroll = actionSel;
+        }
+    } else if (ButtonMapper::ok() && actionCount) {
+        executeAction(actionItems[actionSel]);
+    }
+}
+
+void FileMgrMode::handleViewInput() {
+    if (ButtonMapper::back() || ButtonMapper::ok()) {
+        back();
         return;
     }
-    if (ButtonMapper::isKeyPressed(',')) { if (cursor) --cursor; return; }
-    if (ButtonMapper::isKeyPressed('/')) { if (cursor < bufLen) ++cursor; return; }
-    if (ButtonMapper::isKeyPressed(';') || ButtonMapper::isKeyPressed('.')) {
-        bool up = ButtonMapper::isKeyPressed(';');
-        uint16_t p = cursor;
-        if (up) {
-            while (p > 0 && buf[p - 1] != '\n') --p;
-            if (p > 0) { --p; while (p > 0 && buf[p - 1] != '\n') --p; }
-        } else {
-            while (p < bufLen && buf[p] != '\n') ++p;
-            if (p < bufLen) ++p;
-        }
-        cursor = p;
-        return;
-    }
-    if (keys.enter) {
-        if (bufLen + 1 < EDIT_CAP) {
-            memmove(buf + cursor + 1, buf + cursor, bufLen - cursor);
-            buf[cursor++] = '\n';
-            buf[++bufLen] = '\0';
-            dirty = true;
-        }
-        return;
-    }
-    for (char ch : keys.word) {
-        if (ch < 32 || ch >= 127 || bufLen + 1 >= EDIT_CAP) continue;
-        memmove(buf + cursor + 1, buf + cursor, bufLen - cursor);
-        buf[cursor++] = ch;
-        buf[++bufLen] = '\0';
-        dirty = true;
+    if (ButtonMapper::prev()) {
+        if (viewTopLine) --viewTopLine;
+    } else if (ButtonMapper::next()) {
+        uint16_t lines = 1;
+        for (uint16_t i = 0; i < bufLen; ++i)
+            if (buf[i] == '\n') ++lines;
+        const uint16_t maxTop = lines > 6 ? (uint16_t)(lines - 6) : 0;
+        if (viewTopLine < maxTop) ++viewTopLine;
     }
 }
 
 void FileMgrMode::update() {
     if (!running || App::windowHidden() || !ButtonMapper::keyNewPress(keyLatch)) return;
 
-
     if (phase == Phase::BROWSE) {
         handleBrowseInput();
+    } else if (phase == Phase::ACTIONS) {
+        handleActionsInput();
     } else if (phase == Phase::VIEW) {
         handleViewInput();
-    } else if (phase == Phase::EDIT) {
-        handleEditInput();
-    } else if (phase == Phase::NAME_INPUT) {
-        if (ButtonMapper::back()) {
-            phase = Phase::BROWSE;
-            return;
-        }
-        if (ButtonMapper::isKeyPressed(KEY_BACKSPACE)) {
-            size_t len = strlen(nameBuf);
-            if (len) nameBuf[len - 1] = '\0';
-            return;
-        }
-        if (ButtonMapper::keysState().enter) {
-            commitNameInput();
-            return;
-        }
-        for (char ch : ButtonMapper::keysState().word) {
-            if (ch >= 32 && ch < 127 && strlen(nameBuf) + 1 < NAME_BUF) {
-                size_t len = strlen(nameBuf);
-                nameBuf[len] = ch;
-                nameBuf[len + 1] = '\0';
-            }
-        }
     } else if (phase == Phase::CONFIRM_DEL) {
-        if (ButtonMapper::back() || false || ButtonMapper::isKeyPressed('n') ||
-            ButtonMapper::isKeyPressed('N')) {
+        if (ButtonMapper::back() || ButtonMapper::prev()) {
             phase = Phase::BROWSE;
-        } else if (ButtonMapper::keysState().enter || ButtonMapper::isKeyPressed('y') || ButtonMapper::isKeyPressed('Y')) {
+        } else if (ButtonMapper::ok()) {
             if (sel < entryCount) {
                 char path[PATH_BUF];
                 buildFullPath(path, sizeof(path), entries[sel].name);
@@ -802,84 +602,53 @@ void FileMgrMode::update() {
             phase = Phase::BROWSE;
         }
     } else if (phase == Phase::CONFIRM_OVERWRITE) {
-        if (ButtonMapper::back() || false || ButtonMapper::isKeyPressed('n') ||
-            ButtonMapper::isKeyPressed('N')) {
-            phase = strstr(statusMsg, "PASTE")
-                ? Phase::BROWSE : Phase::NAME_INPUT;
+        if (ButtonMapper::back() || ButtonMapper::prev()) {
+            phase = Phase::BROWSE;
             return;
         }
-        if (ButtonMapper::keysState().enter || ButtonMapper::isKeyPressed('y') || ButtonMapper::isKeyPressed('Y')) {
+        if (ButtonMapper::ok()) {
             char target[PATH_BUF];
-            if (statusMsg[0] && strstr(statusMsg, "PASTE")) {
-                snprintf(target, sizeof(target), "%s%s%s", curPath,
-                         strcmp(curPath, "/") ? "/" : "", baseName(clipboardPath));
-                if (removePath(target)) {
-                    phase = Phase::BROWSE;
-                    pasteClipboard();
-                } else {
-                    phase = Phase::BROWSE;
-                    Display::showToast("REPLACE FAILED", 1000);
-                }
+            snprintf(target, sizeof(target), "%s%s%s", curPath,
+                     strcmp(curPath, "/") ? "/" : "", baseName(clipboardPath));
+            if (removePath(target)) {
+                phase = Phase::BROWSE;
+                pasteClipboard();
             } else {
-                buildFullPath(target, sizeof(target), nameBuf);
-                if (removePath(target)) {
-                    phase = Phase::NAME_INPUT;
-                    commitNameInput();
-                } else {
-                    phase = Phase::NAME_INPUT;
-                    Display::showToast("REPLACE FAILED", 1000);
-                }
+                phase = Phase::BROWSE;
+                Display::showToast("REPLACE FAILED", 1000);
             }
         }
     } else if (phase == Phase::IMAGE || phase == Phase::INFO) {
-        if (ButtonMapper::back() || false) back();
-        else if (phase == Phase::INFO && ButtonMapper::isKeyPressed('e')) {
-            phase = Phase::BROWSE;
-            openSelected();
-        }
+        if (ButtonMapper::back() || ButtonMapper::ok()) back();
     }
 }
 
 void FileMgrMode::getStatusLine(char* out, size_t n) {
     if (!out || !n) return;
-    const uint8_t hintPhase = (uint8_t)((millis() % 10000u) / 2500u);
-    const uint8_t page = hintPhase < 2 ? 0 : (uint8_t)(hintPhase - 1);
     switch (phase) {
         case Phase::BROWSE:
             if (!curPath) snprintf(out, n, "LOW MEMORY");
             else if (listTruncated)
                 snprintf(out, n, "PARTIAL LIST %u  LOW MEM", (unsigned)entryCount);
-            else if (page == 0) snprintf(out, n, "%u FILES  %s",
-                                         (unsigned)entryCount, curPath);
-            else if (page == 1) snprintf(out, n, "A/B SELECT  PWR OPEN  HOLD PWR BACK");
-            else snprintf(out, n, "FILE ACTIONS: USE KEYBOARD SHORTCUTS");
-            if (page == 2 && clipboardAction != ClipboardAction::EMPTY)
-                snprintf(out, n, "%s READY  PASTE NEEDS KEYBOARD",
-                         clipboardAction == ClipboardAction::COPY ? "COPY" : "MOVE");
+            else snprintf(out, n, "A/B SELECT  PWR OPEN  HOLD MENU");
+            break;
+        case Phase::ACTIONS:
+            snprintf(out, n, "A/B SELECT  PWR RUN  HOLD BACK");
             break;
         case Phase::VIEW:
-            snprintf(out, n, "A/B SCROLL  PWR EDIT  HOLD PWR BACK");
-            break;
-        case Phase::EDIT:
-            snprintf(out, n, "%s  A/B MOVE  PWR NEW LINE  HOLD PWR SAVE/BACK",
-                     dirty ? "EDIT *" : "EDIT");
+            snprintf(out, n, "A/B SCROLL  PWR BACK");
             break;
         case Phase::IMAGE:
-            snprintf(out, n, "HOLD PWR BACK");
+            snprintf(out, n, "PWR BACK");
             break;
         case Phase::INFO:
-            snprintf(out, n, "PWR OPEN  HOLD PWR BACK");
-            break;
-        case Phase::NAME_INPUT:
-            snprintf(out, n, "%s NAME  PWR OK  HOLD PWR BACK",
-                     nameAction == NameAction::NEW_FILE ? "NEW FILE" :
-                     nameAction == NameAction::NEW_DIR ? "NEW FOLDER" : "RENAME");
+            snprintf(out, n, "PWR BACK");
             break;
         case Phase::CONFIRM_DEL:
-            snprintf(out, n, "PWR CONFIRM DELETE  HOLD BACK");
+            snprintf(out, n, "PWR DELETE  B CANCEL");
             break;
         case Phase::CONFIRM_OVERWRITE:
-            snprintf(out, n, "PWR REPLACE  HOLD PWR CANCEL");
+            snprintf(out, n, "PWR REPLACE  B CANCEL");
             break;
     }
 }
@@ -915,9 +684,6 @@ void FileMgrMode::drawBrowse(M5Canvas& canvas) {
     if (!entryCount) {
         canvas.setTextColor(UiStyle::DIM);
         canvas.drawString("(EMPTY FOLDER)", 8, 32);
-        canvas.setTextColor(UiStyle::TEXT);
-        canvas.drawString("N CREATE TEXT FILE", 8, 48);
-        canvas.drawString("M CREATE FOLDER", 8, 61);
     }
     for (uint16_t i = scroll; i < entryCount && i < scroll + VIS_ROWS; ++i) {
         int y = 17 + (i - scroll) * 14;
@@ -958,21 +724,50 @@ void FileMgrMode::drawBrowse(M5Canvas& canvas) {
     }
 }
 
-void FileMgrMode::drawViewEdit(M5Canvas& canvas) {
+void FileMgrMode::drawActions(M5Canvas& canvas) {
     canvas.fillSprite(UiStyle::BG);
     canvas.setTextSize(1);
     canvas.setTextDatum(top_left);
     canvas.setTextWrap(false);
-    canvas.setTextColor(phase == Phase::EDIT ? UiStyle::PINK : UiStyle::CYAN);
+    canvas.setTextColor(UiStyle::TITLE);
+    canvas.drawString("FILE ACTIONS", 6, 3);
+    canvas.setTextColor(UiStyle::DIM);
+    const char* selectedName = sel < entryCount ? entries[sel].name : curPath;
+    uiDrawMarquee(canvas, selectedName, 6, 16, DISPLAY_W - 12);
+    canvas.drawFastHLine(6, 28, DISPLAY_W - 12, UiStyle::PANEL);
+
+    for (uint8_t row = 0; row < ACTION_ROWS && actionScroll + row < actionCount; ++row) {
+        const uint8_t idx = (uint8_t)(actionScroll + row);
+        const int y = 31 + row * 13;
+        const bool selected = idx == actionSel;
+        const char* label = "";
+        switch (actionItems[idx]) {
+            case Action::OPEN: label = "OPEN / VIEW"; break;
+            case Action::COPY: label = "COPY HERE"; break;
+            case Action::MOVE: label = "MOVE HERE"; break;
+            case Action::PASTE: label = "PASTE HERE"; break;
+            case Action::DELETE: label = "DELETE"; break;
+            case Action::REFRESH: label = "REFRESH"; break;
+            case Action::UP: label = "UP ONE FOLDER"; break;
+            case Action::EXIT: label = "EXIT FILES"; break;
+        }
+        if (selected) canvas.fillRoundRect(4, y - 1, DISPLAY_W - 8, 12, 2, UiStyle::PINK);
+        canvas.setTextColor(selected ? UiStyle::BG : UiStyle::TEXT);
+        canvas.drawString(label, 9, y);
+    }
+}
+
+void FileMgrMode::drawView(M5Canvas& canvas) {
+    canvas.fillSprite(UiStyle::BG);
+    canvas.setTextSize(1);
+    canvas.setTextDatum(top_left);
+    canvas.setTextWrap(false);
+    canvas.setTextColor(UiStyle::CYAN);
     uiDrawMarquee(canvas, openName, 6, 2, 204);
-    if (dirty) canvas.drawString("*", DISPLAY_W - 12, 2);
     canvas.drawFastHLine(6, 13, DISPLAY_W - 12, UiStyle::PANEL);
 
     uint16_t line = 0, i = 0, drawn = 0;
-    uint16_t curLine = phase == Phase::EDIT ? cursorLine() : viewTopLine;
-    uint16_t top = phase == Phase::EDIT
-        ? (curLine >= 5 ? (uint16_t)(curLine - 4) : 0)
-        : viewTopLine;
+    const uint16_t top = viewTopLine;
     while (i <= bufLen && drawn < 6) {
         uint16_t start = i;
         while (i < bufLen && buf[i] != '\n') ++i;
@@ -985,17 +780,12 @@ void FileMgrMode::drawViewEdit(M5Canvas& canvas) {
             int y = 17 + drawn * 13;
             canvas.setTextColor(UiStyle::TEXT);
             canvas.drawString(text, 7, y);
-            if (phase == Phase::EDIT && line == curLine) {
-                uint16_t col = cursor > start ? (uint16_t)(cursor - start) : 0;
-                if (col > len) col = len;
-                canvas.fillRect(7 + col * 6, y + 10, 5, 1, UiStyle::PINK);
-            }
             ++drawn;
         }
         ++line;
         ++i;
     }
-    if (bufLen == EDIT_CAP - 1) {
+    if (bufLen == PREVIEW_CAP - 1) {
         canvas.setTextColor(UiStyle::GOLD);
         canvas.drawString("PREVIEW LIMITED TO 6 KB", 6, MAIN_H - 10);
     }
@@ -1036,8 +826,12 @@ void FileMgrMode::draw(M5Canvas& canvas) {
         drawBrowse(canvas);
         return;
     }
-    if (phase == Phase::VIEW || phase == Phase::EDIT) {
-        drawViewEdit(canvas);
+    if (phase == Phase::ACTIONS) {
+        drawActions(canvas);
+        return;
+    }
+    if (phase == Phase::VIEW) {
+        drawView(canvas);
         return;
     }
     if (phase == Phase::IMAGE) {
@@ -1063,13 +857,12 @@ void FileMgrMode::draw(M5Canvas& canvas) {
         uiDrawMarquee(canvas, path, 8, 60, DISPLAY_W - 16);
         canvas.setTextColor(UiStyle::GOLD);
         canvas.drawString("UNSUPPORTED PREVIEW FORMAT", 8, 78);
-    } else if (phase == Phase::NAME_INPUT || phase == Phase::CONFIRM_OVERWRITE) {
+    } else if (phase == Phase::CONFIRM_OVERWRITE) {
         canvas.setTextColor(UiStyle::TITLE);
-        canvas.drawString(phase == Phase::NAME_INPUT ? "ENTER NAME" : "REPLACE EXISTING?", 8, 15);
+        canvas.drawString("REPLACE EXISTING?", 8, 15);
         canvas.fillRoundRect(6, 34, DISPLAY_W - 12, 20, 3, UiStyle::PANEL);
         canvas.setTextColor(UiStyle::TEXT);
-        const char* text = phase == Phase::NAME_INPUT ? nameBuf : statusMsg;
-        uiDrawMarquee(canvas, text, 10, 40, DISPLAY_W - 20);
+        uiDrawMarquee(canvas, statusMsg, 10, 40, DISPLAY_W - 20);
     } else if (phase == Phase::CONFIRM_DEL && sel < entryCount) {
         canvas.setTextColor(UiStyle::RED);
         canvas.drawString(entries[sel].isDir ? "DELETE FOLDER AND CONTENTS?" : "DELETE FILE?", 8, 28);
@@ -1077,5 +870,3 @@ void FileMgrMode::draw(M5Canvas& canvas) {
         uiDrawMarquee(canvas, entries[sel].name, 8, 48, DISPLAY_W - 16);
     }
 }
-
-

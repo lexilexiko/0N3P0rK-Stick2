@@ -241,8 +241,8 @@ static const ButtonPreviewAction BP_LOOT[] = {
     {"GET RESULTS", "PWR + B"}, {"INSPECT", "A + B"}, {"BACK", "HOLD PWR"}
 };
 static const ButtonPreviewAction BP_FILES[] = {
-    {"SELECT", "A / B"}, {"OPEN / ACTION", "PWR*"},
-    {"BACK", "HOLD PWR*"}, {"TEXT ENTRY", "KEYBOARD"}
+    {"SELECT", "A / B"}, {"OPEN", "PWR"},
+    {"ACTIONS", "HOLD PWR"}, {"PREVIEW", "READ ONLY"}
 };
 static const ButtonPreviewAction BP_EVIL[] = {
     {"SELECT", "A / B"}, {"OPEN / ACTION", "PWR*"}, {"BACK", "HOLD PWR*"}

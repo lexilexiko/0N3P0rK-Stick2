@@ -599,39 +599,32 @@ and low memory is reported if only a partial listing can be built.
 
 ### Browse and manage
 
-| Key | Action |
+| Button | Action |
 | --- | --- |
-| `^` / `v` | Select the previous / next entry |
-| `ENT` | Open a directory or file |
-| `BKSP` / `ESC` | Go to the parent directory; exit at the SD root |
-| `N` | Create a text file (opens it in the editor) |
-| `M` | Create a folder |
-| `R` | Rename the selected entry |
-| `C` | Copy the selected file or directory |
-| `V` | Mark the selected file or directory to move |
-| `P` | Paste the clipboard into the current directory |
-| `X` | Delete the selected entry after confirmation |
-| `T` | Refresh the directory listing |
+| `A` / `B` | Select the next / previous entry |
+| `PWR` | Open a directory or preview the selected file |
+| Hold `PWR` | Open the action menu |
+| Action menu: `A` / `B` | Select an action |
+| Action menu: `PWR` | Run the selected action |
+| Action menu: hold `PWR` | Return to the file list |
 
 Pasting over an existing destination requires confirmation. Deleting a
 directory removes its contents recursively, so check the selected path before
 confirming.
 
-### Preview and edit
+Available actions are **Open / View**, **Copy**, **Move**, **Paste**, **Delete**,
+**Refresh**, and **Up one folder**; at the SD root, **Exit FILES** replaces the
+up-folder action. Delete and replace actions require confirmation; `B` cancels
+those prompts.
 
-- Text and configuration formats can be previewed, edited, and saved.
+- Text and configuration formats open as read-only previews. `A` / `B` scroll
+  through the text; `PWR` returns to the file list.
 - JPEG, PNG, and BMP images open in the image preview.
-- Other file types show file information; press `E` to try opening them as text.
-- In text preview, `^` / `v` scroll and `E` enters the editor.
-- In the editor, `ESC` saves changed text and returns to the list; Backspace
-  deletes the character before the cursor. Cursor and line movement use
-  `<`, `>`, `^`, and `v`.
-- Create, rename, delete, and overwrite actions report failures and ask before
-  destructive replacements.
+- Other file types show file information.
 
 Working buffers and directory entries are allocated while FILES is open and
-released on exit. The text-edit buffer is allocated only for text preview or
-editing.
+released on exit. The preview buffer is allocated only while a text file is
+open.
 
 ### Other modes
 
