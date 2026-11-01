@@ -24,21 +24,6 @@
 #include "piglet/wolf.h"
 #include "piglet/scene_layers.h"
 
-static void bootLed(bool on) {
-    // StickC Plus 2 red LED is GPIO 19, active low.
-    pinMode(19, OUTPUT);
-    digitalWrite(19, on ? LOW : HIGH);
-}
-
-static void bootBlinks(int n) {
-    for (int i = 0; i < n; ++i) {
-        bootLed(true);
-        delay(140);
-        bootLed(false);
-        delay(140);
-    }
-}
-
 static void bootMark(const char* step) {
     Serial.println(step);
     Serial.flush();
@@ -80,7 +65,6 @@ void setup() {
     digitalWrite(4, HIGH);
     pinMode(27, OUTPUT);
     digitalWrite(27, HIGH);
-    bootBlinks(1);   // 1 blink: CPU is running, setup() started
 
     Serial.begin(115200);
     delay(80);
@@ -112,7 +96,6 @@ void setup() {
     // Autodetect restores GPIO state. Hold must stay high or Plus2 cuts power.
     pinMode(4, OUTPUT);
     digitalWrite(4, HIGH);
-    bootBlinks(2);   // 2 blinks: M5.begin returned
     Serial.printf("[BOOT] M5 board=%d (Plus2 is 5)\n", (int)M5.getBoard());
     M5.Display.setRotation(3);
     M5.Display.setBrightness(255);
@@ -145,7 +128,6 @@ void setup() {
 
     bootMark("[BOOT] display init");
     Display::init();
-    bootBlinks(3);   // 3 blinks: canvas exists
     SFX::init();
     bootMark("[BOOT] avatar");
     Avatar::init();
@@ -167,7 +149,6 @@ void setup() {
     Serial.printf("[BOOT] wifi mode ssid=%s ip=%s\n", s.ssid, s.ip);
     Serial.printf("[BOOT] pig=%s ready\n", Config::personality().name);
     Serial.flush();
-    bootLed(false);
 }
 
 static unsigned long s_lastHeapLog = 0;

@@ -3,7 +3,7 @@
 #include <Arduino.h>
 
 namespace StatusLed {
-// Built-in StickC Plus 2 indicator is a single red LED on GPIO 19 (active low).
+// StickC Plus 2 red LED shares GPIO 19 with the IR emitter; use M5.Power.setLed().
 void begin();
 void update();
 bool isEnabled();

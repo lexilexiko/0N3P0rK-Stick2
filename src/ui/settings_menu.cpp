@@ -104,7 +104,7 @@ static const Item SYSTEM[] = {
     {"SOUND",     Kind::VALUE, 1, 0, 5, 1},
     {"DIM AFTER", Kind::VALUE, 2, 0, 300, 10},
     {"DIM LEVEL", Kind::VALUE, 3, 0, 50, 5},
-    {"LED",       Kind::TOGGLE,4, 0, 1, 1},
+    {"RED LED",   Kind::TOGGLE,4, 0, 1, 1},
 };
 static const uint8_t SYSTEM_N = sizeof(SYSTEM) / sizeof(SYSTEM[0]);
 
@@ -320,7 +320,7 @@ static const char* const H_SYSTEM[] = {
     "0 = MUTE.",
     "0 = NEVER DIM.",
     "0 = SCREEN OFF WHEN DIM.",
-    "RED LED: CAPTURE FLASH / WOLF SOLID. OFF DISABLES IT.",
+    "BLINKS ON CAPTURE OR WOLF. OFF DISABLES IT.",
 };
 static const char* const H_RADIO[] = {
     "RADIO PRESET.",
@@ -1996,4 +1996,3 @@ void draw(M5Canvas& canvas) {
 }
 
 }  // namespace SettingsMenu
-
