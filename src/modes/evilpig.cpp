@@ -831,8 +831,8 @@ void EvilPigMode::handleInputSelect() {
         return;
     }
 
-    if (ButtonMapper::isKeyPressed(';')) {
-        if (!keyWas && listCount > 0) {
+    if (ButtonMapper::isKeyPressed(';') && listCount > 0) {
+        if (!keyWas) {
             keyWas = true;
             if (listIdx == 0) listIdx = listCount - 1;
             else listIdx--;
@@ -840,8 +840,8 @@ void EvilPigMode::handleInputSelect() {
         }
         return;
     }
-    if (ButtonMapper::isKeyPressed('.')) {
-        if (!keyWas && listCount > 0) {
+    if (ButtonMapper::isKeyPressed('.') && listCount > 0) {
+        if (!keyWas) {
             keyWas = true;
             listIdx = (listIdx + 1) % listCount;
             ensureListVisible();
@@ -869,15 +869,14 @@ void EvilPigMode::handleInputSelect() {
         }
         return;
     }
-    if (ButtonMapper::isKeyPressed(KEY_ENTER)) {
-        if (!keyWas && listCount > 0) {
-            keyWas = true;
+    // PWR click — без keyWas, это уже фронт wasClicked. Дебаунс не нужен.
+    if (ButtonMapper::ok() || ButtonMapper::isKeyPressed(KEY_ENTER)) {
+        if (listCount > 0) {
             applySelection();
             char msg[40];
             snprintf(msg, sizeof(msg), "%s ?", apSsid);
             if (!Display::showConfirmBox("CLONE+KICK", msg)) return;
             if (!startPortal()) {
-                // Show real reason (LOW HEAP / AP FAIL / OOM) instead of generic FAIL
                 Display::notify(NoticeKind::ERROR, statusMsg, 2500, NoticeChannel::TOP_BAR);
                 Display::showToast(statusMsg);
                 if (!NetworkRecon::isRunning()) NetworkRecon::start();
@@ -899,7 +898,8 @@ void EvilPigMode::handleInputPortal() {
         keyWas = false;
         return;
     }
-    if (ButtonMapper::isKeyPressed('k') || ButtonMapper::isKeyPressed('K')) {
+    // PWR short → toggle kick on/off
+    if (ButtonMapper::ok() || ButtonMapper::isKeyPressed('k') || ButtonMapper::isKeyPressed('K')) {
         if (!keyWas) {
             keyWas = true;
             if (!targetPmf) {
@@ -909,13 +909,15 @@ void EvilPigMode::handleInputPortal() {
         }
         return;
     }
-    if (ButtonMapper::isKeyPressed('v') || ButtonMapper::isKeyPressed('V')) {
+    // A tap → open loot view
+    if (ButtonMapper::tapA() || ButtonMapper::isKeyPressed('v') || ButtonMapper::isKeyPressed('V')) {
         if (!keyWas) {
             keyWas = true;
             openLoot();
         }
         return;
     }
+    // PWR long → stop and exit
     if (ButtonMapper::back()) {
         if (!keyWas) {
             keyWas = true;
@@ -946,8 +948,9 @@ void EvilPigMode::handleInputLoot() {
         }
         return;
     }
-    // ` / Enter / V = back to previous phase
-    if (ButtonMapper::back() ||
+    // PWR short or long = back to previous phase
+    if (ButtonMapper::ok() ||
+        ButtonMapper::back() ||
         ButtonMapper::isKeyPressed(KEY_ENTER) ||
         ButtonMapper::isKeyPressed('v') ||
         ButtonMapper::isKeyPressed('V')) {

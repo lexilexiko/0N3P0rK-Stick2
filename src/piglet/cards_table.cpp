@@ -518,7 +518,8 @@ void update() {
 
         if (s_phase == Phase::SELECT) {
             // StickC Plus 2 controls: A = next card, B = previous card,
-            // PWR click = select/deselect; another PWR click plays the pair.
+            // PWR click = select/deselect card.
+            // Long A or B = play the selected pair (when 2 cards chosen).
             if (ButtonMapper::next()) {
                 s_cursor = (uint8_t)((s_cursor + 1u) % HAND_N);
                 SFX::play(SFX::MENU_CLICK);
@@ -536,9 +537,11 @@ void update() {
                     s_sel[s_cursor] = true;
                     s_selCount++;
                     SFX::play(SFX::MENU_CLICK);
-                } else {
-                    resolveTurn();
                 }
+            }
+
+            if ((ButtonMapper::longA() || ButtonMapper::longB()) && s_selCount == PICK_N) {
+                resolveTurn();
             }
         }
         return;
@@ -550,7 +553,7 @@ void update() {
 
     int16_t sx = screenX();
     int pig = Avatar::getCurrentX() + 20;
-    bool atTable = abs(pig - (int)sx) < 28;
+    bool atTable = abs(pig - (int)sx) < 60;
     s_nearTable = atTable;
 
     static uint32_t s_hintMs = 0;
@@ -559,12 +562,12 @@ void update() {
     if (!atTable) return;
 
     uint32_t now = millis();
-    if (now - s_hintMs > 2800) {
+    if (now - s_hintMs > 2000) {
         s_hintMs = now;
         Mood::say("PWR = PLAY");
     }
     if (playPressed && now > s_cool) {
-        s_cool = now + 800;
+        s_cool = now + 400;
         startDuel();
     }
 }
@@ -1462,7 +1465,7 @@ void getStatusLine(char* buf, size_t n) {
     if (!s_active) { buf[0] = '\0'; return; }
     if (s_phase == Phase::SELECT) {
         if (s_selCount == PICK_N)
-            snprintf(buf, n, "A/B MOVE  PWR UNDO/PLAY  HOLD PWR EXIT");
+            snprintf(buf, n, "A/B MOVE  PWR PICK  HOLD A/B PLAY  HOLD PWR EXIT");
         else
             snprintf(buf, n, "A/B MOVE  PWR PICK  HOLD PWR EXIT");
     } else if (s_phase == Phase::MATCH_OVER) {

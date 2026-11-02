@@ -2076,13 +2076,12 @@ void PigpassMode::handleInput() {
             return;
         }
 
-        // Existing tab-switch handling is retained.
+        // Tab switch: hold A → HC22000, hold B → PCAP (mirrors loot-menu pattern).
+        // The old keyboard aliases (,  /) are Cardputer-only and dead on StickC.
         if (state == PigpassState::SELECT_HANDSHAKE &&
-            (ButtonMapper::isKeyPressed(',') ||
-             ButtonMapper::isKeyPressed('/'))) {
-            hsTab = (hsTab == PigpassHsTab::PCAP)
-                        ? PigpassHsTab::HC22000
-                        : PigpassHsTab::PCAP;
+            (ButtonMapper::longA() || ButtonMapper::longB())) {
+            hsTab = ButtonMapper::longA() ? PigpassHsTab::HC22000
+                                          : PigpassHsTab::PCAP;
             scanHandshakeFiles();
             uiDirty = true;
             return;
