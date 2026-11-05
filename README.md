@@ -1,7 +1,7 @@
 # 0N3P0rK — Project guide
 
-**Current version: 1.3.8**
-Firmware for **M5Cardputer** / **Cardputer ADV** (ESP32-S3).
+**Current version: 1.4.0**
+Firmware port for **M5StickC Plus 2** (ESP32).
 
 **Idea in one line:** a living pig on a small farm (Tamagotchi-style), and a Wi‑Fi / radio lab in the same barn.
 
@@ -12,11 +12,14 @@ For the chronological list of changes, see the
 [version history](README_HISTORY.md).
 Secret menu codes are **not** listed here (keep them private).
 
-> **Memory note:** the current firmware has roughly **122 KB of free heap** in
-> the observed runtime state. The exact amount varies by active features, and
-> the available headroom for new features is getting tighter. Version **1.4.0**
-> is not planned soon; upcoming work will focus on memory optimization or
-> ports to other devices.
+> **Platform note:** this build targets **M5StickC Plus 2** (ESP32, 240 MHz,
+> 320 KB RAM, 8 MB flash). It is **not** the M5Cardputer (ESP32-S3) build.
+> Internal LittleFS is used for Evil Pig credit storage — no SD card is
+> required for Evil Pig to capture and save passwords.
+
+> **Memory note:** the current firmware has limited free heap on ESP32.
+> Version **1.4.0** is the StickC Plus 2 port; upcoming work will focus on
+> memory optimization.
 
 ---
 
@@ -47,18 +50,16 @@ Secret menu codes are **not** listed here (keep them private).
 
 | | |
 | --- | --- |
-| Boards | **M5Cardputer** (original) and **M5Cardputer ADV** |
-| MCU | ESP32-S3 (StampS3), 240 MHz |
-| Flash | 8 MB — large app partition; internal LittleFS **512 KB** (not used for user loot) |
-| Display | 240 × 135 ST7789 — top bar + farm field + bottom bar |
-| Keyboard | Original: 74HC138 matrix · ADV: TCA8418 |
-| USB | CDC serial — pick COM yourself (VID `303A`) |
-| SD | SPI: CS **12**, MOSI **14**, MISO **39**, SCK **40** |
+| Board | **M5StickC Plus 2** |
+| MCU | ESP32, 240 MHz |
+| RAM | 320 KB |
+| Flash | 8 MB |
+| Display | 135 × 240 ST7789 (rotated) — top bar + farm field + bottom bar |
+| Buttons | **A**, **B**, **PWR** (3 physical buttons) |
+| USB | CDC serial — pick COM yourself |
+| SD | **Not required** — Evil Pig stores credits in internal LittleFS |
 
-Same firmware `.bin` for original and ADV.  
 After changing partition tables from older builds: **erase flash once**, then flash.
-
-All handshakes, wordlists, talk files, and the file manager live on **SD** (not internal flash).
 
 ---
 
@@ -67,7 +68,7 @@ All handshakes, wordlists, talk files, and the file manager live on **SD** (not 
 ### Ready binary
 
 ```text
-esptool.py --chip esp32s3 --port COMx write_flash 0x0 0N3P0rK_v1.3.8_*_Full.bin
+esptool.py --chip esp32 --port COMx write_flash 0x0 0N3P0rK_v1.4.0_*_Full.bin
 ```
 
 Or **M5Launcher** with a `*Launcher*.bin`.
@@ -85,21 +86,21 @@ pio run -t upload --upload-port COMx
 ```
 
 - Platform: `espressif32@6.12.0`  
-- Artifact: `.pio/build/m5cardputer/firmware.bin`  
+- Environment: `m5stickcplus2`  
+- Artifact: `.pio/build/m5stickcplus2/firmware.bin`  
 - Version injected from `platformio.ini` → `custom_version`
 
 ### Updating from an older build
 
-1. Back up the SD card, especially `/0N3P0rK/handshakes/`, `Passworld/`, and any
-   sync credentials.
+1. Back up any important files if you use SD for other modes.
 2. Flash the new `firmware.bin`.
 3. If the partition table changed since the previous installation, erase flash
    once before flashing.
-4. Insert the SD card and reboot.
+4. Reboot.
 5. Open **SET → STATUS** and confirm that the displayed firmware version is
-   `1.3.8`.
+   `1.4.0`.
 
-Existing SD captures are not removed by a firmware update. NVS settings are
+Existing settings are not removed by a firmware update. NVS settings are
 loaded with compatibility defaults when an older configuration does not contain
 newer fields.
 
@@ -107,26 +108,22 @@ newer fields.
 
 ## First minutes
 
-1. Insert a **FAT32** microSD before boot (loot / talk / wordlists).
-2. Device boots to the **farm** with the pig.
-3. Open **SETTINGS** from the menu.
-4. Use **RADIO** for capture, **LOOT** for captures and service sync, and
-   **FILES** to browse and manage SD files.
-5. Play on the farm: walk, jump, seasons, wolf, XP — features unlock as the level grows.
+1. Device boots to the **farm** with the pig.
+2. Open **SETTINGS** from the menu.
+3. Use **RADIO** for capture, **LOOT** for captures and service sync.
+4. Play on the farm: walk, jump, seasons, wolf, XP — features unlock as the level grows.
+5. Evil Pig works without an SD card — credits are saved in internal flash.
 
-## Basic controls
+## Basic controls — M5StickC Plus 2
 
-The exact key labels are shown in the bottom hint bar and may be changed under
-**SET → KEYS**.
+The device has **3 physical buttons**: **A**, **B**, and **PWR**.
+Short taps, holds, and chords are handled in `src/ui/button_mapper.cpp`.
 
-| Control | Typical action |
-| --- | --- |
-| `^` / `v` | Move the selection up / down |
-| `ENT` | Open, confirm, or start the selected item |
-| `ESC` | Go back or close the current page |
-| `SPACE` | Farm attack-hop; in Spectrum, perform the current action |
-| `Z` | Skip the current radio target for this capture session |
-| `G` / `0` | Dim or suspend the farm presentation while supported radio work continues |
+| Button | Tap | Hold |
+| --- | --- | --- |
+| **A** | Next / forward | Fast scroll down (in lists) |
+| **B** | Previous / back | Fast scroll up (in lists) |
+| **PWR** | Confirm / enter / OK | Back / exit |
 
 ### Main menu flow
 
@@ -137,10 +134,38 @@ The exact key labels are shown in the bottom hint bar and may be changed under
    handshake method, capture format, and targeting behavior.
 4. Use **LOOT** to inspect files and synchronize captures with WPASec,
    Pwncrack, or OnlineHashCrack.
-5. Use **SET → STATUS** to check board, SD, Wi-Fi, heap, and firmware state.
+5. Use **SET → STATUS** to check board, Wi-Fi, heap, and firmware state.
 
 Only test networks and devices that you own or are explicitly authorized to
 assess. Active radio features must not be used against third-party networks.
+
+---
+
+## Port status — M5StickC Plus 2 (v1.4.0)
+
+### What works
+
+- Farm scene with pig (walk, jump, sit, dig, seasons, wolf, XP, levels)
+- Main menu navigation (3 buttons: A / B / PWR)
+- Radio capture (ATTACK → LIGHT / AGGRO / STOP)
+- LOOT (browse captures, sync with WPASec / Pwncrack / OHC)
+- Evil Pig (captive portal + credit capture, no SD card needed)
+- Spectrum (2.4 GHz air view)
+- PigPass (offline PSK cracking)
+- XFER (Wi-Fi file manager via temporary AP)
+- FILES (SD file manager)
+- Music (MP3 player, needs SD card)
+- InspectorPig (capture dissection)
+- BadUSB / BadBLE (HID automation)
+- Settings menu (RADIO, KEYS, SYSTEM, STATUS)
+
+### What's broken / removed
+
+- **SD card not required** for Evil Pig — credits saved to internal LittleFS
+- **FILES / XFER / Music / Inspector reports** still need an SD card; without one they show "NO SD CARD"
+- No keyboard — StickC Plus 2 has no QWERTY; keyboard aliases are disabled
+- Cardputer-specific hardware (keyboard matrix, WS2812 LED on GPIO 21) not present
+- Some SD-bound features (handshake storage on SD, wordlists on SD) limited without SD card
 
 ---
 
@@ -637,6 +662,60 @@ open.
 | **EvilPig** | Portal-style lab tool |
 | **BLE / IR** | Extra toys as implemented |
 | **LOOT** | Browse captures and synchronize with supported services |
+
+---
+
+## Evil Pig — captive portal lab tool
+
+Evil Pig clones a target AP's SSID, runs a captive portal, captures submitted
+passwords, and can run optional deauth kicks. It works **without an SD card** —
+captured credentials are stored in internal LittleFS at
+`/0N3P0rK/evilpig/creds.csv`.
+
+### Phases
+
+| Phase | What happens |
+| --- | --- |
+| **SELECT** | Scan and pick a target network from the list |
+| **PORTAL** | SoftAP clone + captive portal (+ optional deauth kicks) |
+| **LOOT** | View captured SSID/password submissions |
+
+### Controls (M5StickC Plus 2)
+
+**SELECT phase** — pick a target network:
+
+| Button | Tap | Hold |
+| --- | --- | --- |
+| **A** | Next network (wrap) | Fast scroll down |
+| **B** | Previous network (wrap) | Fast scroll up |
+| **PWR** | Confirm selected network → confirm dialog → start portal | Exit Evil Pig |
+| Hold **A** + **PWR** | — | — |
+
+**PORTAL phase** — portal is running:
+
+| Button | Tap | Hold |
+| --- | --- | --- |
+| **A** | — | Toggle deauth kicks ON / OFF (if target has no PMF) |
+| **B** | — | Open LOOT (view captured passwords) |
+| **PWR** | — | Exit Evil Pig |
+
+**LOOT phase** — view captured credentials:
+
+| Button | Tap | Hold |
+| --- | --- | --- |
+| **A** | — | Fast scroll down |
+| **B** | — | Fast scroll up |
+| **PWR** | Return to previous phase | — |
+
+> **Tip:** press **PWR** (tap) to confirm a network selection. If you hold **A**
+> or **B** while pressing **PWR**, the hold-scrolling is paused and the confirm
+> still fires.
+
+### Bottom hints
+
+- SELECT: `A / B navigate  hold A / B fast  PWR CLONE`
+- PORTAL: `hold A KICK  hold B LOOT  PWR EXIT`
+- LOOT: `hold A / B fast  PWR BACK`
 
 ---
 
