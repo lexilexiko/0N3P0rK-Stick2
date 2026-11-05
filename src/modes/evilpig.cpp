@@ -832,14 +832,8 @@ void EvilPigMode::handleInputSelect() {
     const bool holdA = ButtonMapper::holdA();
     const bool holdB = ButtonMapper::holdB();
 
-    if (!ButtonMapper::isChanged() && !ButtonMapper::isPressed() && !holdA && !holdB) {
-        keyWas = false;
-        s_repMs = 0;
-        return;
-    }
-
-    // PWR short click — фронт (wasClicked), приоритет над удержанием A/B.
-    // Работает всегда, даже если holdA/holdB активны.
+    // PWR short click — фронт (wasClicked), приоритет над всем.
+    // Проверяется всегда, независимо от удержания A/B.
     if (ButtonMapper::ok() || ButtonMapper::isKeyPressed(KEY_ENTER)) {
         if (listCount > 0) {
             applySelection();
@@ -867,6 +861,13 @@ void EvilPigMode::handleInputSelect() {
             keyWas = true;
             stop();
         }
+        return;
+    }
+
+    // Если вообще нет активности — сброс и выход
+    if (!ButtonMapper::isChanged() && !ButtonMapper::isPressed() && !holdA && !holdB) {
+        keyWas = false;
+        s_repMs = 0;
         return;
     }
 
