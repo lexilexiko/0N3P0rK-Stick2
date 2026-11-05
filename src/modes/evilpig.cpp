@@ -838,6 +838,38 @@ void EvilPigMode::handleInputSelect() {
         return;
     }
 
+    // PWR short click — фронт (wasClicked), приоритет над удержанием A/B.
+    // Работает всегда, даже если holdA/holdB активны.
+    if (ButtonMapper::ok() || ButtonMapper::isKeyPressed(KEY_ENTER)) {
+        if (listCount > 0) {
+            applySelection();
+            char msg[40];
+            snprintf(msg, sizeof(msg), "%s ?", apSsid);
+            if (!Display::showConfirmBox("CLONE+KICK", msg)) return;
+            if (!startPortal()) {
+                // Show real reason (LOW HEAP / AP FAIL / OOM) instead of generic FAIL
+                Display::notify(NoticeKind::ERROR, statusMsg, 2500, NoticeChannel::TOP_BAR);
+                Display::showToast(statusMsg);
+                if (!NetworkRecon::isRunning()) NetworkRecon::start();
+                phase = Phase::SELECT;
+                refreshNetworkList();
+                return;
+            }
+            Avatar::setState(AvatarState::HAPPY);
+            Display::notify(NoticeKind::STATUS, "PORTAL ON", 2000, NoticeChannel::TOP_BAR);
+        }
+        return;
+    }
+
+    // PWR hold — выход из режима
+    if (ButtonMapper::back()) {
+        if (!keyWas) {
+            keyWas = true;
+            stop();
+        }
+        return;
+    }
+
     // Аналог удержания кнопок (как holdA/holdB в ButtonMapper):
     // удержание A — быстрый листай вниз, удержание B — быстрый листай вверх.
     if (listCount > 0) {
@@ -893,34 +925,6 @@ void EvilPigMode::handleInputSelect() {
             if (!keyWas) {
                 keyWas = true;
                 openLoot();
-            }
-            return;
-        }
-        if (ButtonMapper::back()) {
-            if (!keyWas) {
-                keyWas = true;
-                stop();
-            }
-            return;
-        }
-        // PWR short click — уже фронт (wasClicked), keyWas не нужен
-        if (ButtonMapper::ok() || ButtonMapper::isKeyPressed(KEY_ENTER)) {
-            if (listCount > 0) {
-                applySelection();
-                char msg[40];
-                snprintf(msg, sizeof(msg), "%s ?", apSsid);
-                if (!Display::showConfirmBox("CLONE+KICK", msg)) return;
-                if (!startPortal()) {
-                    // Show real reason (LOW HEAP / AP FAIL / OOM) instead of generic FAIL
-                    Display::notify(NoticeKind::ERROR, statusMsg, 2500, NoticeChannel::TOP_BAR);
-                    Display::showToast(statusMsg);
-                    if (!NetworkRecon::isRunning()) NetworkRecon::start();
-                    phase = Phase::SELECT;
-                    refreshNetworkList();
-                    return;
-                }
-                Avatar::setState(AvatarState::HAPPY);
-                Display::notify(NoticeKind::STATUS, "PORTAL ON", 2000, NoticeChannel::TOP_BAR);
             }
             return;
         }
