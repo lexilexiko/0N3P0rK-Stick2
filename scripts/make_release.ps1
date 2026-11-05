@@ -263,7 +263,7 @@ Write-Host "============================================"
 Write-Host ""
 
 $mergeArgsM5 = $EspToolArgs + @(
-    "--chip", "esp32s3",
+    "--chip", "esp32",
     "merge_bin",
     "-o", $M5LauncherBin,
 
@@ -302,7 +302,7 @@ Write-Host "============================================"
 Write-Host ""
 
 $mergeArgsFull = $EspToolArgs + @(
-    "--chip", "esp32s3",
+    "--chip", "esp32",
     "merge_bin",
     "-o", $FullBin,
 

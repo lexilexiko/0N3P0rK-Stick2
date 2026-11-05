@@ -473,7 +473,7 @@ void EvilPigMode::pushCatch(const char* ssid, const String& password, uint8_t ch
 }
 
 void EvilPigMode::loadCatchesFromSd() {
-    if (!Config::isSDAvailable()) return;
+    // Внутренняя память (LittleFS) — работает без SD карты.
     const char* path = SDLayout::evilpigCredsPath();
     if (!LittleFS.exists(path)) return;
     File f = LittleFS.open(path, FILE_READ);
@@ -548,7 +548,7 @@ void EvilPigMode::handleNotFound() {
 }
 
 void EvilPigMode::saveSubmission(const String& password) {
-    if (!Config::isSDAvailable()) return;
+    // Внутренняя память (LittleFS) — работает без SD карты.
     SDLayout::ensureDirs();
     const char* path = SDLayout::evilpigCredsPath();
     bool needHeader = !LittleFS.exists(path);
@@ -1288,7 +1288,7 @@ void EvilPigMode::drawLoot(M5Canvas& canvas) {
         canvas.setTextColor(UiStyle::GOLD);
         canvas.drawString("empty", 4, 36);
         canvas.setTextColor(UiStyle::DIM);
-        canvas.drawString("SD: /0N3P0rK/evilpig", 4, 52);
+        canvas.drawString("LittleFS: /0N3P0rK/evilpig", 4, 52);
         return;
     }
 
